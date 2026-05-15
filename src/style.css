@@ -1,0 +1,219 @@
+/* ── Variable-weight web fonts ───────────────────────────────────────────
+   Single .ttf per family carries every weight (100..900) via `wght` axis.
+   Inter additionally has an `opsz` axis (we just inherit auto-optical sizing
+   from the font itself).  `font-display: swap` shows fallback text instantly
+   if the user hits the page before the file finishes downloading. */
+@font-face {
+  font-family: 'Inter';
+  src: url('/fonts/Inter-Variable.ttf') format('truetype-variations');
+  font-weight: 100 900;
+  font-style: normal;
+  font-display: swap;
+}
+@font-face {
+  font-family: 'Space Grotesk';
+  src: url('/fonts/SpaceGrotesk-Variable.ttf') format('truetype-variations');
+  font-weight: 100 900;
+  font-style: normal;
+  font-display: swap;
+}
+@font-face {
+  font-family: 'JetBrains Mono';
+  src: url('/fonts/JetBrainsMono-Variable.ttf') format('truetype-variations');
+  font-weight: 100 900;
+  font-style: normal;
+  font-display: swap;
+}
+@font-face {
+  font-family: 'Uncut Sans';
+  src: url('/fonts/UncutSans-Variable.ttf') format('truetype-variations');
+  font-weight: 100 900;
+  font-style: normal;
+  font-display: swap;
+}
+
+:root {
+  --name-font: bold 64px Georgia, serif;
+  --name-color: #f4ead8;
+  --char: 0; /* charring level 0..1, set from JS */
+  /* Page background — overridable per-theme via a class, and per-session
+     via an inline style set by the bg colour picker. */
+  --page-bg: #000000;
+  color-scheme: dark;
+}
+
+@media (max-width: 720px) {
+  :root {
+    --name-font: bold 44px Georgia, serif;
+  }
+}
+
+html, body {
+  margin: 0;
+  padding: 0;
+  width: 100%;
+  background: var(--page-bg);
+  overscroll-behavior: none;
+  font-family: Georgia, serif;
+  color: #f4ead8;
+}
+
+/* The body is now scrollable — its height defines the runway for the
+   scroll-driven sphere animation.  Everything visible (canvas, name, final
+   screen) is position: fixed so it stays pinned to the viewport while the
+   user scrolls; only the abstract "scroll progress" drifts. */
+body {
+  min-height: 300vh;
+}
+
+/* Hide the scrollbar (still scrollable via wheel / touch / keyboard). */
+body::-webkit-scrollbar { display: none; }
+body { scrollbar-width: none; }
+
+#fire {
+  position: fixed;
+  top: 0;
+  left: 0;
+  width: 100%;
+  height: 100%;
+  display: block;
+  z-index: 0;
+  pointer-events: none;
+}
+
+#name {
+  position: fixed;
+  top: 0;
+  left: 0;
+  z-index: 2;
+  font: var(--name-font);
+  color: var(--name-color);
+  white-space: nowrap;
+  user-select: none;
+  -webkit-user-select: none;
+  touch-action: none;
+  cursor: grab;
+  will-change: transform, opacity, color, text-shadow;
+  /* Charring visuals — driven by --char (0..1) */
+  color: color-mix(in oklab, var(--name-color) calc((1 - var(--char)) * 100%), #2a0e04);
+  text-shadow:
+    0 0 calc(var(--char) * 18px) rgba(255, 140, 40, calc(var(--char) * 0.9)),
+    0 0 calc(var(--char) * 36px) rgba(255, 60, 0, calc(var(--char) * 0.7));
+  transition: opacity 200ms ease-out;
+}
+
+#name.dragging {
+  cursor: grabbing;
+}
+
+#name.hidden {
+  opacity: 0;
+  pointer-events: none;
+}
+
+#final {
+  position: fixed;
+  inset: 0;
+  z-index: 3;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 14px;
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 600ms ease-out;
+  text-align: center;
+}
+
+#final.visible {
+  opacity: 1;
+  pointer-events: auto;
+}
+
+#final-name {
+  font: var(--name-font);
+  color: var(--name-color);
+  text-shadow: 0 0 24px rgba(255, 140, 40, 0.25);
+}
+
+#final-soon {
+  font: 18px Georgia, serif;
+  font-style: italic;
+  color: rgba(244, 234, 216, 0.55);
+  letter-spacing: 0.18em;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  #name {
+    transition: none;
+  }
+}
+
+/* ── Floating bottom menu — phosphor list (no chrome) ───────────────────
+   No background, no header — just a stack of `> ITEM` rows tinted with
+   the live `colorTip` palette stop (CSS var `--tip-color`, set from the
+   rAF loop in main.ts).  Colour follows the fire's hue rotation in
+   real time.  Hover fills the row with the same colour and inverts the
+   text for legibility. */
+:root {
+  --menu-opacity: 0;
+  /* Sensible fallback in case JS hasn't pushed a value yet. */
+  --tip-color: #97c3f2;
+}
+
+#floating-menu {
+  position: fixed;
+  bottom: 36px;
+  left: 50%;
+  transform: translateX(-50%);
+  z-index: 5;
+  width: 145px;
+  opacity: var(--menu-opacity);
+  pointer-events: none;
+  font: 18px/1.45 "Uncut Sans", ui-monospace, Menlo, Consolas, monospace;
+  font-weight: bold;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--tip-color);
+  text-shadow:
+    0 0 1px var(--tip-color),
+    0 0 6px color-mix(in oklab, var(--tip-color) 60%, transparent);
+  -webkit-font-smoothing: none;
+  -moz-osx-font-smoothing: grayscale;
+}
+#floating-menu.interactive { pointer-events: auto; }
+
+#floating-menu ul {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+#floating-menu li { margin: 0; padding: 0; }
+
+#floating-menu a {
+  display: block;
+  padding: 2px 8px 2px 4px;
+  color: inherit;
+  text-decoration: none;
+  position: relative;
+}
+/* `>` chevron prefix — pseudo-element so the actual link text stays
+   clean for screen readers and copy-paste. */
+#floating-menu a::before {
+  content: "> ";
+  display: inline-block;
+  margin-right: 8px;
+  opacity: 0.85;
+}
+
+#floating-menu a:hover,
+#floating-menu a:focus,
+#floating-menu a:active {
+  outline: none;
+  background: var(--tip-color);
+  /* Invert against the highlight using a contrasting dark tone derived
+     from the tip colour itself (mostly black, with a hint of the hue). */
+  color: color-mix(in oklab, var(--tip-color) 8%, #000);
+  text-shadow: none;
+}
