@@ -11,6 +11,14 @@ const FONT_FAMILIES: Array<{ label: string; stack: string }> = [
   { label: 'Space Grotesk',   stack: '"Space Grotesk", system-ui, sans-serif' },
   { label: 'JetBrains Mono',  stack: '"JetBrains Mono", ui-monospace, monospace' },
   { label: 'Uncut Sans',      stack: '"Uncut Sans", system-ui, sans-serif' },
+  // Google Fonts serif collection.
+  { label: 'Instrument Serif',  stack: '"Instrument Serif", Georgia, serif' },
+  { label: 'Bodoni Moda',       stack: '"Bodoni Moda", "Bodoni MT", Georgia, serif' },
+  { label: 'Cormorant Garamond',stack: '"Cormorant Garamond", "Garamond", serif' },
+  { label: 'Spectral',          stack: '"Spectral", Georgia, serif' },
+  { label: 'Libre Baskerville', stack: '"Libre Baskerville", Baskerville, serif' },
+  { label: 'DM Serif Display',  stack: '"DM Serif Display", Georgia, serif' },
+  { label: 'Playfair Display',  stack: '"Playfair Display", "Didot", Georgia, serif' },
   // System fallbacks.
   { label: 'Georgia',   stack: 'Georgia, "Times New Roman", serif' },
   { label: 'Times',     stack: '"Times New Roman", Times, serif' },
@@ -46,6 +54,10 @@ const SLIDERS: SliderDef[] = [
   { key: 'strokeWidth',     label: 'outline px',     min: 0,   max: 24,  step: 0.5 },
   { key: 'glitchIntensity', label: 'glitch amount',  min: 0,   max: 1,   step: 0.01 },
   { key: 'glitchSpeed',     label: 'glitch speed',   min: 0,   max: 20,  step: 0.1 },
+  // Independent visual scale — stretches the rendered name without
+  // touching the font size.  1 = no scaling.
+  { key: 'scaleX',          label: 'scale x',        min: 0.1, max: 6,   step: 0.01 },
+  { key: 'scaleY',          label: 'scale y',        min: 0.1, max: 6,   step: 0.01 },
 ]
 
 const STORAGE_KEY = 'name-controls-v1'
@@ -82,9 +94,9 @@ function injectStyles(): void {
       z-index: 9999;
       width: 240px;
       font: 11px/1.3 ui-monospace, "SF Mono", Menlo, Consolas, monospace;
-      color: rgba(244, 234, 216, 0.92);
-      background: rgba(10, 6, 8, 0.78);
-      border: 1px solid rgba(244, 234, 216, 0.22);
+      color: rgba(255, 255, 255, 0.85);
+      background: rgba(18, 18, 18, 0.82);
+      border: 1px solid rgba(255, 255, 255, 0.18);
       border-radius: 8px;
       backdrop-filter: blur(8px);
       -webkit-backdrop-filter: blur(8px);
@@ -96,8 +108,8 @@ function injectStyles(): void {
       display: flex; align-items: center; gap: 6px;
       padding: 7px 10px; cursor: pointer;
       letter-spacing: 0.08em; text-transform: uppercase;
-      color: rgba(244, 234, 216, 0.95);
-      border-bottom: 1px solid rgba(244, 234, 216, 0.18);
+      color: rgba(255, 255, 255, 0.90);
+      border-bottom: 1px solid rgba(255, 255, 255, 0.12);
     }
     #name-controls header .chev { transition: transform 150ms ease-out; font-size: 9px; opacity: 0.7; }
     #name-controls.collapsed header { border-bottom: none; }
@@ -113,7 +125,7 @@ function injectStyles(): void {
     #name-controls .row label { opacity: 0.78; }
     #name-controls .row .val {
       font-variant-numeric: tabular-nums;
-      color: rgba(244, 234, 216, 0.95);
+      color: rgba(255, 255, 255, 0.90);
       opacity: 0.95;
     }
 
@@ -121,51 +133,51 @@ function injectStyles(): void {
     #name-controls input[type="text"],
     #name-controls .font-row select {
       width: 100%; padding: 5px 8px; font: inherit; color: inherit;
-      background: rgba(244, 234, 216, 0.08);
-      border: 1px solid rgba(244, 234, 216, 0.24);
+      background: rgba(255, 255, 255, 0.06);
+      border: 1px solid rgba(255, 255, 255, 0.18);
       border-radius: 4px;
       letter-spacing: 0.04em;
       box-sizing: border-box;
     }
     #name-controls input[type="text"]:focus,
-    #name-controls .font-row select:focus { outline: none; border-color: rgba(244, 234, 216, 0.45); }
+    #name-controls .font-row select:focus { outline: none; border-color: rgba(255, 255, 255, 0.35); }
     #name-controls .font-row select { cursor: pointer; appearance: none; }
-    #name-controls .font-row select:hover { background: rgba(244, 234, 216, 0.14); }
-    #name-controls .font-row select option { background: #1a0d04; color: rgba(244, 234, 216, 0.92); }
+    #name-controls .font-row select:hover { background: rgba(255, 255, 255, 0.10); }
+    #name-controls .font-row select option { background: #1a1a1a; color: rgba(255, 255, 255, 0.85); }
 
     #name-controls input[type="range"] {
       width: 100%; height: 14px; -webkit-appearance: none; appearance: none;
       background: transparent; margin: 0;
     }
     #name-controls input[type="range"]::-webkit-slider-runnable-track {
-      height: 2px; background: rgba(244, 234, 216, 0.25); border-radius: 1px;
+      height: 2px; background: rgba(255, 255, 255, 0.20); border-radius: 1px;
     }
     #name-controls input[type="range"]::-moz-range-track {
-      height: 2px; background: rgba(244, 234, 216, 0.25); border-radius: 1px;
+      height: 2px; background: rgba(255, 255, 255, 0.20); border-radius: 1px;
     }
     #name-controls input[type="range"]::-webkit-slider-thumb {
       -webkit-appearance: none; appearance: none;
       width: 12px; height: 12px; border-radius: 50%;
-      background: rgb(244, 234, 216);
-      box-shadow: 0 0 6px rgba(244, 234, 216, 0.5);
+      background: rgb(220, 220, 220);
+      box-shadow: 0 0 6px rgba(255, 255, 255, 0.3);
       margin-top: -5px; cursor: pointer; border: none;
     }
     #name-controls input[type="range"]::-moz-range-thumb {
       width: 12px; height: 12px; border-radius: 50%;
-      background: rgb(244, 234, 216);
-      box-shadow: 0 0 6px rgba(244, 234, 216, 0.5);
+      background: rgb(220, 220, 220);
+      box-shadow: 0 0 6px rgba(255, 255, 255, 0.3);
       cursor: pointer; border: none;
     }
 
     #name-controls .colour-row {
       display: flex; align-items: center; gap: 8px;
       margin-top: 10px; padding-top: 8px;
-      border-top: 1px solid rgba(244, 234, 216, 0.18);
+      border-top: 1px solid rgba(255, 255, 255, 0.12);
     }
     #name-controls .colour-row label { opacity: 0.78; flex: 1; }
     #name-controls .colour-row input[type="color"] {
       width: 56px; height: 26px; padding: 0;
-      border: 1px solid rgba(244, 234, 216, 0.28);
+      border: 1px solid rgba(255, 255, 255, 0.20);
       border-radius: 4px; background: transparent; cursor: pointer;
     }
     #name-controls .colour-row input[type="color"]::-webkit-color-swatch-wrapper { padding: 2px; }
@@ -173,50 +185,50 @@ function injectStyles(): void {
 
     #name-controls .actions {
       display: flex; gap: 6px; margin-top: 10px; padding-top: 8px;
-      border-top: 1px solid rgba(244, 234, 216, 0.18);
+      border-top: 1px solid rgba(255, 255, 255, 0.12);
     }
     #name-controls button {
       flex: 1; padding: 5px 8px; font: inherit; color: inherit;
-      background: rgba(244, 234, 216, 0.08);
-      border: 1px solid rgba(244, 234, 216, 0.28);
+      background: rgba(255, 255, 255, 0.06);
+      border: 1px solid rgba(255, 255, 255, 0.20);
       border-radius: 4px; cursor: pointer; letter-spacing: 0.05em; text-transform: lowercase;
     }
-    #name-controls button:hover  { background: rgba(244, 234, 216, 0.16); }
-    #name-controls button:active { background: rgba(244, 234, 216, 0.24); }
+    #name-controls button:hover  { background: rgba(255, 255, 255, 0.12); }
+    #name-controls button:active { background: rgba(255, 255, 255, 0.18); }
 
     /* ── Light theme overrides ────────────────────────────────────────── */
     body.theme-light #name-controls {
-      color: rgba(40, 18, 6, 0.92);
-      background: rgba(255, 248, 234, 0.85);
-      border-color: rgba(40, 18, 6, 0.22);
+      color: rgba(0, 0, 0, 0.92);
+      background: rgba(245, 245, 245, 0.88);
+      border-color: rgba(0, 0, 0, 0.22);
       box-shadow: 0 6px 24px rgba(80, 30, 0, 0.18);
     }
     body.theme-light #name-controls header {
-      color: rgba(40, 18, 6, 0.95);
-      border-bottom-color: rgba(40, 18, 6, 0.18);
+      color: rgba(0, 0, 0, 0.95);
+      border-bottom-color: rgba(0, 0, 0, 0.18);
     }
     body.theme-light #name-controls .actions,
-    body.theme-light #name-controls .colour-row { border-top-color: rgba(40, 18, 6, 0.18); }
+    body.theme-light #name-controls .colour-row { border-top-color: rgba(0, 0, 0, 0.18); }
     body.theme-light #name-controls input[type="text"],
     body.theme-light #name-controls .font-row select {
-      background: rgba(40, 18, 6, 0.06); border-color: rgba(40, 18, 6, 0.22);
+      background: rgba(0, 0, 0, 0.06); border-color: rgba(0, 0, 0, 0.22);
     }
     body.theme-light #name-controls input[type="text"]:focus,
-    body.theme-light #name-controls .font-row select:focus { border-color: rgba(40, 18, 6, 0.42); }
-    body.theme-light #name-controls .font-row select option { background: #fff8ea; color: rgba(40, 18, 6, 0.92); }
+    body.theme-light #name-controls .font-row select:focus { border-color: rgba(0, 0, 0, 0.42); }
+    body.theme-light #name-controls .font-row select option { background: #f5f5f5; color: rgba(0, 0, 0, 0.92); }
     body.theme-light #name-controls input[type="range"]::-webkit-slider-runnable-track,
     body.theme-light #name-controls input[type="range"]::-moz-range-track {
-      background: rgba(40, 18, 6, 0.28);
+      background: rgba(0, 0, 0, 0.28);
     }
     body.theme-light #name-controls input[type="range"]::-webkit-slider-thumb,
     body.theme-light #name-controls input[type="range"]::-moz-range-thumb {
-      background: rgb(40, 18, 6); box-shadow: 0 0 6px rgba(40, 18, 6, 0.4);
+      background: rgb(40, 18, 6); box-shadow: 0 0 6px rgba(0, 0, 0, 0.4);
     }
-    body.theme-light #name-controls .row .val { color: rgba(40, 18, 6, 0.95); }
+    body.theme-light #name-controls .row .val { color: rgba(0, 0, 0, 0.95); }
     body.theme-light #name-controls button {
-      background: rgba(40, 18, 6, 0.06); border-color: rgba(40, 18, 6, 0.28);
+      background: rgba(0, 0, 0, 0.06); border-color: rgba(0, 0, 0, 0.28);
     }
-    body.theme-light #name-controls button:hover  { background: rgba(40, 18, 6, 0.14); }
+    body.theme-light #name-controls button:hover  { background: rgba(0, 0, 0, 0.14); }
   `
   const style = document.createElement('style')
   style.id = 'name-controls-styles'
@@ -404,6 +416,146 @@ export function mountNameControls(
   })
   glitchRow.appendChild(glitchSelect)
   body.appendChild(glitchRow)
+
+  // ── Floating menu (PROJECTS / CONTACTS links) typography ────────────────
+  // The menu is a separate UI element from the name itself, but it lives in
+  // the same typographic conversation, so we tune it here.  All settings
+  // are applied via CSS custom properties on :root, and persisted in their
+  // own localStorage key so the name's reset doesn't wipe them.
+  const MENU_KEY = 'menu-style-v1'
+  interface MenuStyle {
+    family: string
+    size: number
+    weight: number
+    letterSpacing: number
+    uppercase: boolean
+  }
+  const MENU_DEFAULTS: MenuStyle = {
+    family: '"Uncut Sans", ui-monospace, Menlo, Consolas, monospace',
+    size: 18,
+    weight: 700,
+    letterSpacing: 0.06,
+    uppercase: true,
+  }
+  function loadMenuStyle(): MenuStyle {
+    try {
+      const raw = localStorage.getItem(MENU_KEY)
+      if (!raw) return { ...MENU_DEFAULTS }
+      const parsed = JSON.parse(raw) as Partial<MenuStyle>
+      return { ...MENU_DEFAULTS, ...parsed }
+    } catch {
+      return { ...MENU_DEFAULTS }
+    }
+  }
+  function saveMenuStyle(s: MenuStyle): void {
+    try { localStorage.setItem(MENU_KEY, JSON.stringify(s)) } catch { /* ignore */ }
+  }
+  const menuStyle = loadMenuStyle()
+  function applyMenuStyle(): void {
+    const root = document.documentElement.style
+    root.setProperty('--menu-font-family', menuStyle.family)
+    root.setProperty('--menu-font-size', menuStyle.size + 'px')
+    root.setProperty('--menu-font-weight', String(menuStyle.weight))
+    root.setProperty('--menu-letter-spacing', menuStyle.letterSpacing + 'em')
+    root.setProperty('--menu-text-transform', menuStyle.uppercase ? 'uppercase' : 'none')
+  }
+  applyMenuStyle()
+
+  // Section header (just a styled empty label-line for visual separation).
+  const menuHeader = document.createElement('div')
+  menuHeader.className = 'row'
+  menuHeader.style.marginTop = '10px'
+  menuHeader.style.opacity = '0.55'
+  menuHeader.style.fontSize = '10px'
+  menuHeader.style.letterSpacing = '0.12em'
+  menuHeader.style.textTransform = 'uppercase'
+  menuHeader.textContent = '— menu links —'
+  body.appendChild(menuHeader)
+
+  // Menu font family dropdown — reuses the same FONT_FAMILIES list.
+  const menuFontRow = document.createElement('div')
+  menuFontRow.className = 'font-row'
+  const menuFontSelect = document.createElement('select')
+  menuFontSelect.title = 'Menu font family'
+  // Match the same custom-option trick used by the name's dropdown.
+  const menuKnown = new Set(FONT_FAMILIES.map(f => f.stack))
+  if (!menuKnown.has(menuStyle.family)) {
+    const opt = document.createElement('option')
+    opt.value = menuStyle.family
+    opt.textContent = 'custom'
+    menuFontSelect.appendChild(opt)
+  }
+  for (const f of FONT_FAMILIES) {
+    const opt = document.createElement('option')
+    opt.value       = f.stack
+    opt.textContent = f.label
+    opt.style.fontFamily = f.stack
+    menuFontSelect.appendChild(opt)
+  }
+  menuFontSelect.value = menuStyle.family
+  menuFontSelect.addEventListener('change', () => {
+    menuStyle.family = menuFontSelect.value
+    applyMenuStyle()
+    saveMenuStyle(menuStyle)
+  })
+  menuFontRow.appendChild(menuFontSelect)
+  body.appendChild(menuFontRow)
+
+  // Helper: build a numeric slider row for a menu style key.
+  function addMenuSlider(
+    label: string,
+    initial: number,
+    min: number,
+    max: number,
+    step: number,
+    onChange: (v: number) => void,
+    format: (v: number) => string = (v) => v.toString(),
+  ): void {
+    const row = document.createElement('div')
+    row.className = 'row'
+    const labelLine = document.createElement('div')
+    labelLine.className = 'label-line'
+    const lbl = document.createElement('label')
+    lbl.textContent = label
+    const valSpan = document.createElement('span')
+    valSpan.className = 'val'
+    valSpan.textContent = format(initial)
+    labelLine.append(lbl, valSpan)
+    const input = document.createElement('input')
+    input.type = 'range'
+    input.min   = String(min)
+    input.max   = String(max)
+    input.step  = String(step)
+    input.value = String(initial)
+    input.addEventListener('input', () => {
+      const v = Number(input.value)
+      valSpan.textContent = format(v)
+      onChange(v)
+      applyMenuStyle()
+      saveMenuStyle(menuStyle)
+    })
+    row.append(labelLine, input)
+    body.appendChild(row)
+  }
+  addMenuSlider(
+    'menu size',
+    menuStyle.size,
+    8, 64, 1,
+    (v) => { menuStyle.size = v },
+  )
+  addMenuSlider(
+    'menu weight',
+    menuStyle.weight,
+    100, 900, 100,
+    (v) => { menuStyle.weight = v },
+  )
+  addMenuSlider(
+    'menu spacing',
+    menuStyle.letterSpacing,
+    -0.05, 0.5, 0.005,
+    (v) => { menuStyle.letterSpacing = v },
+    (v) => v.toFixed(3) + 'em',
+  )
 
   // Actions.
   const actions = document.createElement('div')

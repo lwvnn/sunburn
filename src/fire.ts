@@ -23,6 +23,7 @@ import {
 } from '@chenglou/pretext'
 import { createNoise2D } from 'simplex-noise'
 import type { CursorEffect } from './cursor-effects'
+import quotesCaps from './corpus/quotes_caps.json'
 
 // ─── Live-tunable params ───────────────────────────────────────────────────
 
@@ -83,6 +84,24 @@ export interface FireParams {
   sphereRadiusFrac: number
   /** Max flame length (beyond sphere edge) as fraction of min(viewportW, viewportH). */
   flameRadialReach: number
+  // ── Central peak (extra-tall tongue aimed at one angle) ─────────────────
+  // Multiplies the per-angle flame length by a bell centred on
+  // `centerPeakAngle`, so a single tongue stretches taller than its
+  // neighbours.  Width and curve sharpness shape the falloff into the
+  // surrounding flames.  Amp = 1 disables the effect (no boost).
+  /** Length multiplier at the peak's centre.  1 = no boost; 2 = twice as
+   *  long as the surrounding tongues; etc. */
+  centerPeakAmp: number
+  /** Angular half-width of the peak (radians).  Beyond this the boost is
+   *  back to 1.  ~0.3 ≈ a single tongue; π = the entire corona. */
+  centerPeakWidth: number
+  /** Falloff exponent on the bell.  1 = linear, 2 = quadratic (smooth top,
+   *  sharp shoulders), 0.5 = sharp top, gradual shoulders.  Higher = more
+   *  isolated peak; lower = wider plateau. */
+  centerPeakSmoothness: number
+  /** Angle the peak is aimed at, in degrees.  −90 = straight up (the top
+   *  of the visible sphere for the default eclipse setup). */
+  centerPeakAngleDeg: number
   /** Width (px) of the alpha ramp-up at the sphere's edge.  Like tipFadePx
    *  but on the inner boundary — text right at the surface fades to zero
    *  and reaches full opacity `sphereFadePx` px away.  0 disables. */
@@ -122,6 +141,8 @@ export interface FireParams {
   scanlineOpacity: number
   /** Spacing between scanlines, in CSS pixels.  3 ≈ classic CRT density. */
   scanlineSpacing: number
+  /** Upward scroll speed of the scanlines, in CSS px/sec.  0 = static. */
+  scanlineSpeed: number
   // ── Swirl (sphere mode only) ─────────────────────────────────────────────
   /** Maximum swirl angle (radians).  A noise field sampled at each
    *  character's position is multiplied by this value, so tips twist in
@@ -139,6 +160,47 @@ export interface FireParams {
   swirlStart: number
   /** Which noise-field flavour drives the swirl. */
   swirlType: SwirlType
+  // ── Curl vortices (localised circular eddies in the corona) ─────────────
+  // A small number of vortex centres sit around the sphere at mid-corona
+  // radius and slowly drift over time.  Each vortex rotates nearby chars
+  // around ITS centre (not the sphere centre), creating local whirlpools —
+  // some flame tongues curl while neighbours stay straight.  Falloff is
+  // a gaussian so the effect blends smoothly into the rest of the corona.
+  //
+  // Per-vortex strength and radius are RANDOMISED within the [min, max]
+  // ranges you set — each vortex picks a deterministic value seeded by
+  // its index, so the pattern is stable frame-to-frame but each vortex
+  // has its own character (e.g. setting strengthMin = −3, strengthMax = 3
+  // gives a mix of CW and CCW eddies of varying intensity).
+  /** Min per-vortex rotation in radians.  Set both min/max to 0 to disable. */
+  curlStrengthMin: number
+  /** Max per-vortex rotation in radians. */
+  curlStrengthMax: number
+  /** Number of vortices evenly distributed around the sphere — your
+   *  "frequency" control: more vortices = curls appear more often. */
+  curlCount: number
+  /** Min falloff radius of a vortex in CSS px (its zone of influence). */
+  curlRadiusMin: number
+  /** Max falloff radius of a vortex in CSS px. */
+  curlRadiusMax: number
+  /** Min distance of a vortex centre from the sphere surface as a fraction
+   *  of the local flame length.  0 = right at the surface, 1 = at the flame
+   *  tip.  Set both min/max equal for a fixed distance, or spread them for
+   *  vortices at varied depths along the corona. */
+  curlDistanceMin: number
+  /** Max fractional distance of a vortex centre from the sphere surface. */
+  curlDistanceMax: number
+  /** Angular drift rate of the vortex pattern around the sphere (rad/sec). */
+  curlDriftSpeed: number
+  // ── White-noise grain overlay (applied as a post-pass in main.ts) ──────
+  /** Master opacity of the grain layer (0 disables it). */
+  grainOpacity: number
+  /** Size of each grain pixel block in device px.  1 = pure single-pixel
+   *  noise, larger values make the texture chunkier / more visible. */
+  grainScale: number
+  /** Frames between noise reshuffles.  1 = fresh noise every frame
+   *  (most film-like), higher = the same noise persists longer (calmer). */
+  grainSpeed: number
 }
 
 /** Noise-field flavours for the swirl effect:
@@ -171,50 +233,66 @@ export const SWIRL_TYPES: readonly SwirlType[] = [
 ]
 
 export const FIRE_DEFAULTS: FireParams = {
-  fontFamily: '"Inter", system-ui, sans-serif',
-  fontSize: 15,
-  fontWeight: 400,
-  lineHeight: 16,
+  fontFamily: '"Cormorant Garamond", "Garamond", serif',
+  fontSize: 20,
+  fontWeight: 100,
+  lineHeight: 20,
   letterSpacing: 0,
-  textScrollSpeed: 13,
+  textScrollSpeed: 10,
   fireBandFrac: 0.9,
-  tongueBase: 0.61,
-  tongueBigAmp: 0.34,
-  tongueBigSx: 0.1000,
+  tongueBase: 0.55,
+  tongueBigAmp: 0.29,
+  tongueBigSx: 0.025,
   tongueBigSt: 0.2,
-  tongueMedAmp: 0.25,
+  tongueMedAmp: 0.21,
   tongueMedSx: 0.05,
-  tongueMedSt: 0.65,
+  tongueMedSt: 0.4,
   flickerAmp: 0.33,
-  flickerSx: 0.008,
+  flickerSx: 0.069,
   flickerSy: 0.001,
   flickerSt: 0.85,
   flickerBias: 0.5,
   flickerContrast: 1.25,
-  tipFadePx: 578,
+  tipFadePx: 0,
   sphereEnabled: true,
   sphereCxFrac: 0.50,
   sphereCyFrac: 1.86,
-  sphereRadiusFrac: 1.28,
-  flameRadialReach: 0.44,
-  sphereFadePx: 17,
-  colorBase: '#a3a3a3',
+  sphereRadiusFrac: 1.09,
+  flameRadialReach: 0.53,
+  centerPeakAmp: 1,
+  centerPeakWidth: 0.5,
+  centerPeakSmoothness: 2,
+  centerPeakAngleDeg: -90,
+  sphereFadePx: 0,
+  colorBase: '#000000',
   colorLow: '#000000',
-  colorHot: '#6b5798',
-  colorTip: '#dedede',
-  colorHueShiftSpeed: 0,
-  glowOpacity: 0.4,
-  glowRadius: 23,
-  glowSoftness: 0.29,
+  colorHot: '#ffffff',
+  colorTip: '#ffffff',
+  colorHueShiftSpeed: 125,
+  glowOpacity: 0,
+  glowRadius: 17,
+  glowSoftness: 0.27,
   glowColor: '#ff8800',
   pixelSize: 1,
-  scanlineOpacity: 0.5,
+  scanlineOpacity: 0,
   scanlineSpacing: 2,
+  scanlineSpeed: 30,
   swirlStrength: 0.052,
   swirlScale: 0.0012,
-  swirlSpeed: 0.35,
-  swirlStart: 0.11,
+  swirlSpeed: 0.5,
+  swirlStart: 0.09,
   swirlType: 'turbulence',
+  curlStrengthMin: 0,
+  curlStrengthMax: 0,
+  curlCount: 6,
+  curlRadiusMin: 70,
+  curlRadiusMax: 120,
+  curlDistanceMin: 0.4,
+  curlDistanceMax: 0.55,
+  curlDriftSpeed: 0.05,
+  grainOpacity: 0.08,
+  grainScale: 1,
+  grainSpeed: 2,
 }
 
 /** Default colors tuned for a light (white-ish) background — deeper and more saturated. */
@@ -236,7 +314,7 @@ const FLAME_SAMPLE_STEP = 6
 
 /** Minimum span width (px) we'll bother laying text into. Below this Pretext
  *  may struggle to fit even a single character. */
-const MIN_SPAN_W = 32
+const MIN_SPAN_W = 4
 
 /** Number of angular slots used to pre-sample radial flame length around the
  *  sphere. 360 gives 1° resolution — comfortably smooth at any visible size. */
@@ -285,6 +363,12 @@ export interface Fire {
    * natural positions.
    */
   setCursorEffect(effect: CursorEffect | null): void
+  /**
+   * Plug in additional cursor effects anchored permanently to the center,
+   * left, and right of the sphere, with an explicit strength parameter.
+   */
+  /** Permanently anchor three repels (main, left, right) and explicitly control their strength. */
+  setCenterRepels(main: CursorEffect | null, left: CursorEffect | null, right: CursorEffect | null, strength: number, lookStrength?: number): void
   /**
    * Read the live `colorTip` palette stop with the current hue rotation
    * applied (same math the glow post-pass uses), returned as an
@@ -408,6 +492,26 @@ export function createFire(
    */
   let cursorStrengthRaw = 0
 
+  let centerRepelEffect: CursorEffect | null = null
+  let leftRepelEffect: CursorEffect | null = null
+  let rightRepelEffect: CursorEffect | null = null
+  let centerRepelStrength = 0
+  let pupilLookStrength = 1
+
+  let mainPupilChar = 'O'
+  let leftPupilChar = 'O'
+  let rightPupilChar = 'O'
+  
+  let mainPupilMinDist = Infinity
+  let leftPupilMinDist = Infinity
+  let rightPupilMinDist = Infinity
+
+  const pupilOffsets = [
+    { x: 0, y: 0 },
+    { x: 0, y: 0 },
+    { x: 0, y: 0 }
+  ]
+
   // ── Optional boolean mask (e.g. centred name) ─────────────────────────────
   let mask: FireMask | null = null
 
@@ -442,6 +546,23 @@ export function createFire(
   // 0..NUM_ANGLES-1 mapping [-π, π] linearly. Refilled every frame in radial
   // mode; ignored otherwise.
   const flameLenByAngle = new Float32Array(NUM_ANGLES)
+
+  // Pre-computed curl vortices.  Each vortex stores [x, y, strength, radius]
+  // so per-vortex randomisation costs nothing in the per-char inner loop.
+  // Refilled each frame inside the sphere block.
+  let curlCenters = new Float32Array(0)
+  let numCurls = 0
+
+  /** Deterministic [0, 1) hash from an integer index + a salt.  Used to
+   *  pick per-vortex strength and radius from their [min, max] ranges so
+   *  the same vortex gets the same value frame-to-frame. */
+  function vortexHash01(idx: number, salt: number): number {
+    let x = (idx ^ salt) >>> 0
+    x = Math.imul(x ^ (x >>> 16), 0x85ebca6b) >>> 0
+    x = Math.imul(x ^ (x >>> 13), 0xc2b2ae35) >>> 0
+    x = (x ^ (x >>> 16)) >>> 0
+    return (x % 100000) / 100000
+  }
 
   /** Wrapped linear interpolation of flame length at any angle in [-π, π]. */
   function flameLenAtAngle(angle: number): number {
@@ -487,6 +608,10 @@ export function createFire(
 
   return {
     draw(ctx, timeMs) {
+      mainPupilMinDist = Infinity
+      leftPupilMinDist = Infinity
+      rightPupilMinDist = Infinity
+      
       ctx.font = fontShorthand()
       ctx.textBaseline = 'top'
       ;(ctx as unknown as { letterSpacing?: string }).letterSpacing =
@@ -501,7 +626,17 @@ export function createFire(
       const cy_s = h * params.sphereCyFrac
       const R_s  = sphereOn ? minDim * params.sphereRadiusFrac : 0
       const R2_s = R_s * R_s
+
       const maxFlameR = sphereOn ? minDim * params.flameRadialReach : 0
+      
+      const getRepelFade = (rx: number, ry: number) => {
+        if (!sphereOn) return 1
+        const dist = Math.hypot(rx - cx_s, ry - cy_s)
+        return Math.max(0, Math.min(1, (dist - R_s) / 40 + 0.5))
+      }
+      const fadeMain = getRepelFade(cx_s, h * 0.8)
+      const fadeLeft = getRepelFade(cx_s - w * 0.15, h * 0.85)
+      const fadeRight = getRepelFade(cx_s + w * 0.15, h * 0.85)
 
       // In sphere mode the band is the full viewport. Otherwise fall back to
       // the legacy bottom-band geometry driven by fireBandFrac.
@@ -584,6 +719,16 @@ export function createFire(
         // inputs give a naturally periodic signal so there's no seam at ±π.
         const sxBig = params.tongueBigSx * RADIAL_NOISE_K
         const sxMed = params.tongueMedSx * RADIAL_NOISE_K
+        // Central-peak bell, prepared once per frame.  Wrapped angular
+        // distance to the peak angle determines a [0..1] weight that we
+        // shape with `centerPeakSmoothness`, then mix between 1 (no
+        // boost) and `centerPeakAmp` (full boost).  When amp == 1 we
+        // skip the per-slot work entirely.
+        const peakActive = params.centerPeakAmp !== 1
+        const peakAngle = (params.centerPeakAngleDeg * Math.PI) / 180
+        const peakHalf = Math.max(0.001, params.centerPeakWidth)
+        const peakSharp = Math.max(0.05, params.centerPeakSmoothness)
+        const peakBoost = params.centerPeakAmp - 1
         for (let a = 0; a < NUM_ANGLES; a++) {
           const angle = (a / NUM_ANGLES) * TWO_PI - Math.PI
           const ax = Math.cos(angle)
@@ -599,7 +744,74 @@ export function createFire(
               )
           if (frac < 0) frac = 0
           else if (frac > 1) frac = 1
-          flameLenByAngle[a] = frac * maxFlameR
+          let len = frac * maxFlameR
+
+          if (peakActive) {
+            // Shortest angular distance (always in [0, π]) to the peak.
+            let d = angle - peakAngle
+            if (d > Math.PI) d -= TWO_PI
+            else if (d < -Math.PI) d += TWO_PI
+            d = d < 0 ? -d : d
+            // Normalised radial distance from peak centre, in [0, 1].
+            const tN = d >= peakHalf ? 1 : d / peakHalf
+            // (1 − t)^smoothness — peaks at t=0 (centre) and zero at t=1
+            // (peak edge).  Higher exponent ⇒ sharper, more isolated peak.
+            const w = tN >= 1 ? 0 : Math.pow(1 - tN, peakSharp)
+            // Apply OUTSIDE the [0, 1] cap so the central peak genuinely
+            // shoots past `maxFlameR` — that's how it becomes longer than
+            // every other tongue, not just locally taller within its slot.
+            len *= 1 + peakBoost * w
+          }
+          flameLenByAngle[a] = len
+        }
+
+        // ── Curl-vortex centre positions ─────────────────────────────────
+        // Evenly distributed around the sphere with a slow time-driven
+        // angular drift.  Each vortex picks its own STRENGTH, RADIUS, and
+        // DISTANCE from the [min, max] ranges via vortexHash01 — same idx
+        // always gives the same draw, so the pattern is stable across
+        // frames.  Distance is a fraction of the local flame length so
+        // vortices stay inside the actual corona regardless of how the
+        // flame breathes around them.
+        const curlSRange =
+          Math.abs(params.curlStrengthMax - params.curlStrengthMin) +
+          Math.abs(params.curlStrengthMin) +
+          Math.abs(params.curlStrengthMax)
+        if (curlSRange > 0 && params.curlCount > 0) {
+          const need = params.curlCount
+          // 4 floats per vortex: x, y, strength, radius.
+          if (curlCenters.length < need * 4) {
+            curlCenters = new Float32Array(need * 4)
+          }
+          numCurls = need
+          const drift = t * params.curlDriftSpeed
+          const sMin = params.curlStrengthMin
+          const sMax = params.curlStrengthMax
+          const rMin = params.curlRadiusMin
+          const rMax = params.curlRadiusMax
+          const dMin = params.curlDistanceMin
+          const dMax = params.curlDistanceMax
+          for (let v = 0; v < need; v++) {
+            const ang = (v / need) * TWO_PI + drift
+            const tS = vortexHash01(v, 0xa53f0b1d)
+            const tR = vortexHash01(v, 0x6c2f7e9b)
+            const tD = vortexHash01(v, 0x3fa9e4c7)
+            const s = sMin + (sMax - sMin) * tS
+            const r = rMin + (rMax - rMin) * tR
+            const d = dMin + (dMax - dMin) * tD
+            // Use the global maxFlameR (stable per frame, doesn't flicker
+            // with the per-angle noise) so each vortex keeps the SAME
+            // radial distance it was hash-assigned for its whole lifetime
+            // on screen — no jumping every frame as the corona's noise
+            // field breathes around it.
+            const radial = R_s + maxFlameR * d
+            curlCenters[v * 4]     = cx_s + Math.cos(ang) * radial
+            curlCenters[v * 4 + 1] = cy_s + Math.sin(ang) * radial
+            curlCenters[v * 4 + 2] = s
+            curlCenters[v * 4 + 3] = Math.max(1, r)
+          }
+        } else {
+          numCurls = 0
         }
       } else {
         for (let i = 0; i < numSamples; i++) {
@@ -724,14 +936,24 @@ export function createFire(
                     range.end.graphemeIndex === cursor.graphemeIndex) {
                   break fillLoop
                 }
+
                 const txt = materializeLineRange(prepared, range).text
+                
+                let unkernedWidth = 0
                 for (let c = 0; c < txt.length; c++) {
                   const ch = txt[c]
+                  unkernedWidth += (ch === ' ' || ch === '\t' || ch === '\n') ? charWidth(' ') : charWidth(ch)
+                }
+                const correctionRatio = unkernedWidth > 0 ? range.width / unkernedWidth : 1
+
+                for (let c = 0; c < txt.length; c++) {
+                  const ch = txt[c]
+                  const cw = ((ch === ' ' || ch === '\t' || ch === '\n') ? charWidth(' ') : charWidth(ch)) * correctionRatio
+
                   if (ch === ' ' || ch === '\t' || ch === '\n') {
-                    charX += charWidth(' ')
+                    charX += cw
                     continue
                   }
-                  const cw = charWidth(ch)
 
                   // Heat at this cell. In sphere mode it's based on radial
                   // distance from the sphere edge — hottest right at the
@@ -776,10 +998,45 @@ export function createFire(
                   }
 
                   // Raw simplex noise in [-1, 1] — base flicker signal.
-                  const flickerRaw = nFlick(
-                    charX  * params.flickerSx,
-                    screenY * params.flickerSy + t * params.flickerSt,
-                  )
+                  // In sphere mode we sample in POLAR coords (angle, radius):
+                  //   X axis: angle around sphere   → flickerSx · 200 cycles
+                  //                                   per radian
+                  //   Y axis: distance from centre  → flickerSy cycles per px
+                  //                                   MINUS time × flickerSt
+                  // Subtracting time from the radial axis makes the noise
+                  // pattern drift OUTWARD predictably.  The seam where
+                  // atan2 wraps at ±π is hidden by sampling both sides and
+                  // smooth-blending across a small wrap-zone.
+                  // In legacy band mode we keep the original bottom→top
+                  // scroll (time added to Y).
+                  let flickerRaw: number
+                  if (sphereOn) {
+                    const fdx = charX - cx_s
+                    const fdy = screenY - cy_s
+                    const fdd = Math.sqrt(fdx * fdx + fdy * fdy)
+                    const fang = Math.atan2(fdy, fdx)
+                    const angScale = params.flickerSx * 200
+                    const radCoord = fdd * params.flickerSy - t * params.flickerSt
+                    const s1 = nFlick(fang * angScale, radCoord)
+                    // Seam blend: also sample the wrapped angle and fade
+                    // between them near ±π so there's no visible jump.
+                    const seamDist = Math.PI - Math.abs(fang)
+                    const SEAM_W = 0.6 // radians
+                    if (seamDist < SEAM_W) {
+                      const fang2 = fang > 0 ? fang - TWO_PI : fang + TWO_PI
+                      const s2 = nFlick(fang2 * angScale, radCoord)
+                      const x = 1 - seamDist / SEAM_W
+                      const b = x * x * (3 - 2 * x) * 0.5 // smoothstep × 0.5
+                      flickerRaw = s1 * (1 - b) + s2 * b
+                    } else {
+                      flickerRaw = s1
+                    }
+                  } else {
+                    flickerRaw = nFlick(
+                      charX  * params.flickerSx,
+                      screenY * params.flickerSy + t * params.flickerSt,
+                    )
+                  }
                   // Gamma curve (signed): pow(|f|, contrast) · sign(f).
                   // contrast=1 is a no-op; the conditional skips the Math.pow
                   // call for the common case.
@@ -895,12 +1152,55 @@ export function createFire(
                           break
                       }
 
+                      // Reduce rotation in narrow angular regions (the sides
+                      // of the visible arc) where the band is too thin to
+                      // absorb swirl displacement — quadratic falloff with
+                      // the local flame length keeps the apex's swirl punch
+                      // while calming the sides where gaps used to appear.
+                      // No destination-band clamp: that produces vertical
+                      // stacking at narrow spike tips by forcing many chars
+                      // onto the same near-zero rotation.  Letting tip chars
+                      // overshoot slightly past the band reads as a natural
+                      // flame flare instead.
+                      const lenWeight = maxFlameR > 1
+                        ? (sFL / maxFlameR) * (sFL / maxFlameR)
+                        : 1
                       const angleOffset =
-                        noiseVal * params.swirlStrength * tipWeight
+                        noiseVal * params.swirlStrength * tipWeight * lenWeight
                       const cosA = Math.cos(angleOffset)
                       const sinA = Math.sin(angleOffset)
                       drawX = cx_s + sdx * cosA - sdy * sinA
                       drawY = cy_s + sdx * sinA + sdy * cosA
+                    }
+                  }
+
+                  // ── Curl vortices ────────────────────────────────────────
+                  // Rotate the char around each nearby vortex centre.  Each
+                  // vortex carries its own strength + radius (drawn from the
+                  // [min, max] ranges), so the corona has a varied set of
+                  // CW / CCW / mild / strong eddies rather than a uniform
+                  // pattern.  Falloff is a gaussian so the effect dies off
+                  // smoothly past 3σ.  Rotations from overlapping vortices
+                  // accumulate linearly in the angle.
+                  if (numCurls > 0) {
+                    for (let v = 0; v < numCurls; v++) {
+                      const vx = curlCenters[v * 4]
+                      const vy = curlCenters[v * 4 + 1]
+                      const vS = curlCenters[v * 4 + 2]
+                      const vR = curlCenters[v * 4 + 3]
+                      if (vS === 0) continue
+                      const sig2 = vR * vR
+                      const cutoff2 = sig2 * 9
+                      const cdx = drawX - vx
+                      const cdy = drawY - vy
+                      const cd2 = cdx * cdx + cdy * cdy
+                      if (cd2 > cutoff2) continue
+                      const influence = Math.exp(-cd2 / (2 * sig2))
+                      const cAng = vS * influence
+                      const cC = Math.cos(cAng)
+                      const cS = Math.sin(cAng)
+                      drawX = vx + cdx * cC - cdy * cS
+                      drawY = vy + cdx * cS + cdy * cC
                     }
                   }
 
@@ -910,17 +1210,81 @@ export function createFire(
                   // cursor + time + ce and take the new draw position
                   // back.  Reads the swirled position so cursor effects
                   // compose with the swirl naturally.
-                  if (cursorEffect && ce > 0.001) {
+                  // Fade out the mouse repel effect if it crosses inside the giant black sphere
+                  let effectiveCe = ce
+                  if (sphereOn && cursorEffect && effectiveCe > 0.001) {
+                    const dx_c = cursorX - cx_s
+                    const dy_c = cursorY - cy_s
+                    const dist_c = Math.sqrt(dx_c * dx_c + dy_c * dy_c)
+                    // Fade out over 40 pixels across the sphere boundary (R_s)
+                    const mouseFade = Math.max(0, Math.min(1, (dist_c - R_s) / 40 + 0.5))
+                    effectiveCe *= mouseFade
+                  }
+
+                  if (cursorEffect && effectiveCe > 0.001) {
                     const out = cursorEffect.displace(
                       drawX,
                       drawY,
                       cursorX,
                       cursorY,
                       timeMs,
-                      ce,
+                      effectiveCe
                     )
                     drawX = out[0]
                     drawY = out[1]
+                  }
+
+                  // Constant center repel effect (like the mouse effect but anchored to the middle)
+                  if (centerRepelStrength > 0.001) {
+                    if (centerRepelEffect && fadeMain > 0) {
+                      const out = centerRepelEffect.displace(
+                        drawX, drawY, cx_s, h * 0.8, timeMs, centerRepelStrength * fadeMain
+                      )
+                      drawX = out[0]; drawY = out[1]
+                    }
+                    if (leftRepelEffect && fadeLeft > 0) {
+                      const out = leftRepelEffect.displace(
+                        drawX, drawY, cx_s - w * 0.15, h * 0.85, timeMs, centerRepelStrength * fadeLeft
+                      )
+                      drawX = out[0]; drawY = out[1]
+                    }
+                    if (rightRepelEffect && fadeRight > 0) {
+                      const out = rightRepelEffect.displace(
+                        drawX, drawY, cx_s + w * 0.15, h * 0.85, timeMs, centerRepelStrength * fadeRight
+                      )
+                      drawX = out[0]; drawY = out[1]
+                    }
+                    
+                    // Track which character is closest to each pupil center
+                    if (fadeMain > 0) {
+                      const dx_main = drawX - cx_s
+                      const dy_main = drawY - (h * 0.8)
+                      const dist_main = dx_main*dx_main + dy_main*dy_main
+                      if (dist_main < mainPupilMinDist) {
+                        mainPupilMinDist = dist_main
+                        mainPupilChar = ch
+                      }
+                    }
+
+                    if (fadeLeft > 0) {
+                      const dx_left = drawX - (cx_s - w * 0.15)
+                      const dy_left = drawY - (h * 0.85)
+                      const dist_left = dx_left*dx_left + dy_left*dy_left
+                      if (dist_left < leftPupilMinDist) {
+                        leftPupilMinDist = dist_left
+                        leftPupilChar = ch
+                      }
+                    }
+
+                    if (fadeRight > 0) {
+                      const dx_right = drawX - (cx_s + w * 0.15)
+                      const dy_right = drawY - (h * 0.85)
+                      const dist_right = dx_right*dx_right + dy_right*dy_right
+                      if (dist_right < rightPupilMinDist) {
+                        rightPupilMinDist = dist_right
+                        rightPupilChar = ch
+                      }
+                    }
                   }
 
                   ctx.fillText(ch, drawX, drawY)
@@ -932,6 +1296,52 @@ export function createFire(
             }
           }
         }
+      }
+
+      // ── Draw stable pupils ────────────────────────────────────────────────
+      if (centerRepelStrength > 0.001) {
+        ctx.save()
+        // Use the brightest color (the tip of the flame)
+        ctx.fillStyle = palette[palette.length - 1].fill
+        ctx.textAlign = 'center'
+        ctx.textBaseline = 'middle'
+
+        const drawPupil = (char: string, px: number, py: number, pupilIndex: number, repelFade: number) => {
+          if (repelFade <= 0) return
+          const lx = cursorX - px
+          const ly = cursorY - py
+          const lDist = Math.sqrt(lx * lx + ly * ly)
+          
+          let targetOx = 0
+          let targetOy = 0
+          
+          if (lDist > 0 && cursorActive) {
+            const maxLook = 30 * pupilLookStrength // Pushed further to the edge
+            const lookAmt = Math.min(lDist / 300, 1) * maxLook
+            targetOx = (lx / lDist) * lookAmt
+            targetOy = (ly / lDist) * lookAmt
+          }
+          
+          // Smooth organic tracking via simple lerp
+          pupilOffsets[pupilIndex].x += (targetOx - pupilOffsets[pupilIndex].x) * 0.15
+          pupilOffsets[pupilIndex].y += (targetOy - pupilOffsets[pupilIndex].y) * 0.15
+
+          let charToDraw = char
+          if (pupilIndex === 0 && lDist < 60 && cursorActive) {
+            // Cursor aligns with central pupil -> shift iris to words
+            const wordIndex = Math.floor(timeMs / 150) % quotesCaps.length
+            charToDraw = quotesCaps[wordIndex]
+          }
+
+          ctx.globalAlpha = Math.min(1, centerRepelStrength * 3) * repelFade
+          ctx.fillText(charToDraw, px + pupilOffsets[pupilIndex].x, py + pupilOffsets[pupilIndex].y)
+        }
+
+        drawPupil(mainPupilChar, cx_s, h * 0.8, 0, fadeMain)
+        drawPupil(leftPupilChar, cx_s - w * 0.15, h * 0.85, 1, fadeLeft)
+        drawPupil(rightPupilChar, cx_s + w * 0.15, h * 0.85, 2, fadeRight)
+        
+        ctx.restore()
       }
 
       ctx.globalAlpha = 1
@@ -1041,6 +1451,13 @@ export function createFire(
 
     setCursorEffect(e) {
       cursorEffect = e
+    },
+    setCenterRepels(main, left, right, strength, lookStrength = 1) {
+      centerRepelEffect = main
+      leftRepelEffect = left
+      rightRepelEffect = right
+      centerRepelStrength = strength
+      pupilLookStrength = lookStrength
     },
 
     getCurrentTipColor(timeMs) {

@@ -69,9 +69,9 @@ function injectStyles(): void {
       z-index: 9999;
       width: 240px;
       font: 11px/1.3 ui-monospace, "SF Mono", Menlo, Consolas, monospace;
-      color: rgba(180, 235, 255, 0.92);
-      background: rgba(0, 12, 22, 0.82);
-      border: 1px solid rgba(80, 200, 240, 0.30);
+      color: rgba(255, 255, 255, 0.85);
+      background: rgba(18, 18, 18, 0.82);
+      border: 1px solid rgba(255, 255, 255, 0.20);
       border-radius: 8px;
       backdrop-filter: blur(8px);
       -webkit-backdrop-filter: blur(8px);
@@ -83,8 +83,8 @@ function injectStyles(): void {
       display: flex; align-items: center; gap: 6px;
       padding: 7px 10px; cursor: pointer;
       letter-spacing: 0.08em; text-transform: uppercase;
-      color: rgba(160, 230, 255, 0.95);
-      border-bottom: 1px solid rgba(80, 200, 240, 0.22);
+      color: rgba(255, 255, 255, 0.90);
+      border-bottom: 1px solid rgba(255, 255, 255, 0.12);
     }
     #cursor-controls header .chev { transition: transform 150ms ease-out; font-size: 9px; opacity: 0.7; }
     #cursor-controls.collapsed header { border-bottom: none; }
@@ -100,92 +100,92 @@ function injectStyles(): void {
     #cursor-controls .row label { opacity: 0.78; }
     #cursor-controls .row .val {
       font-variant-numeric: tabular-nums;
-      color: rgba(160, 230, 255, 0.95);
+      color: rgba(255, 255, 255, 0.90);
       opacity: 0.95;
     }
 
     #cursor-controls .effect-row { margin: 0 0 10px; }
     #cursor-controls .effect-row select {
       width: 100%; padding: 5px 8px; font: inherit; color: inherit;
-      background: rgba(80, 200, 240, 0.10);
-      border: 1px solid rgba(80, 200, 240, 0.32);
+      background: rgba(255, 255, 255, 0.06);
+      border: 1px solid rgba(255, 255, 255, 0.22);
       border-radius: 4px;
       letter-spacing: 0.04em;
       cursor: pointer;
       appearance: none;
       text-transform: uppercase;
     }
-    #cursor-controls .effect-row select:hover { background: rgba(80, 200, 240, 0.18); }
-    #cursor-controls .effect-row select option { background: #001220; color: rgba(180, 235, 255, 0.92); }
+    #cursor-controls .effect-row select:hover { background: rgba(255, 255, 255, 0.12); }
+    #cursor-controls .effect-row select option { background: #1a1a1a; color: rgba(255, 255, 255, 0.85); }
 
     #cursor-controls input[type="range"] {
       width: 100%; height: 14px; -webkit-appearance: none; appearance: none;
       background: transparent; margin: 0;
     }
     #cursor-controls input[type="range"]::-webkit-slider-runnable-track {
-      height: 2px; background: rgba(80, 200, 240, 0.28); border-radius: 1px;
+      height: 2px; background: rgba(255, 255, 255, 0.20); border-radius: 1px;
     }
     #cursor-controls input[type="range"]::-moz-range-track {
-      height: 2px; background: rgba(80, 200, 240, 0.28); border-radius: 1px;
+      height: 2px; background: rgba(255, 255, 255, 0.20); border-radius: 1px;
     }
     #cursor-controls input[type="range"]::-webkit-slider-thumb {
       -webkit-appearance: none; appearance: none;
       width: 12px; height: 12px; border-radius: 50%;
-      background: rgb(130, 220, 255);
-      box-shadow: 0 0 8px rgba(80, 200, 240, 0.6);
+      background: rgb(220, 220, 220);
+      box-shadow: 0 0 8px rgba(255, 255, 255, 0.3);
       margin-top: -5px; cursor: pointer; border: none;
     }
     #cursor-controls input[type="range"]::-moz-range-thumb {
       width: 12px; height: 12px; border-radius: 50%;
-      background: rgb(130, 220, 255);
-      box-shadow: 0 0 8px rgba(80, 200, 240, 0.6);
+      background: rgb(220, 220, 220);
+      box-shadow: 0 0 8px rgba(255, 255, 255, 0.3);
       cursor: pointer; border: none;
     }
 
     #cursor-controls .actions {
       display: flex; gap: 6px; margin-top: 10px; padding-top: 8px;
-      border-top: 1px solid rgba(80, 200, 240, 0.22);
+      border-top: 1px solid rgba(255, 255, 255, 0.12);
     }
     #cursor-controls button {
       flex: 1; padding: 5px 8px; font: inherit; color: inherit;
-      background: rgba(80, 200, 240, 0.10);
-      border: 1px solid rgba(80, 200, 240, 0.30);
+      background: rgba(255, 255, 255, 0.06);
+      border: 1px solid rgba(255, 255, 255, 0.20);
       border-radius: 4px; cursor: pointer; letter-spacing: 0.05em; text-transform: lowercase;
     }
-    #cursor-controls button:hover  { background: rgba(80, 200, 240, 0.20); }
-    #cursor-controls button:active { background: rgba(80, 200, 240, 0.32); }
+    #cursor-controls button:hover  { background: rgba(255, 255, 255, 0.14); }
+    #cursor-controls button:active { background: rgba(255, 255, 255, 0.22); }
 
     /* ── Light theme overrides ────────────────────────────────────────── */
     body.theme-light #cursor-controls {
-      color: rgba(0, 50, 80, 0.92);
-      background: rgba(232, 248, 255, 0.88);
-      border-color: rgba(0, 110, 160, 0.28);
-      box-shadow: 0 6px 24px rgba(0, 40, 80, 0.18);
+      color: rgba(0, 0, 0, 0.92);
+      background: rgba(245, 245, 245, 0.88);
+      border-color: rgba(0, 0, 0, 0.28);
+      box-shadow: 0 6px 24px rgba(0, 0, 0, 0.18);
     }
     body.theme-light #cursor-controls header {
-      color: rgba(0, 90, 140, 0.95);
-      border-bottom-color: rgba(0, 110, 160, 0.22);
+      color: rgba(0, 0, 0, 0.95);
+      border-bottom-color: rgba(0, 0, 0, 0.22);
     }
-    body.theme-light #cursor-controls .actions { border-top-color: rgba(0, 110, 160, 0.22); }
-    body.theme-light #cursor-controls .row .val { color: rgba(0, 100, 150, 0.95); }
+    body.theme-light #cursor-controls .actions { border-top-color: rgba(0, 0, 0, 0.22); }
+    body.theme-light #cursor-controls .row .val { color: rgba(0, 0, 0, 0.95); }
     body.theme-light #cursor-controls input[type="range"]::-webkit-slider-runnable-track,
     body.theme-light #cursor-controls input[type="range"]::-moz-range-track {
-      background: rgba(0, 110, 160, 0.30);
+      background: rgba(0, 0, 0, 0.30);
     }
     body.theme-light #cursor-controls input[type="range"]::-webkit-slider-thumb,
     body.theme-light #cursor-controls input[type="range"]::-moz-range-thumb {
-      background: rgb(0, 130, 200); box-shadow: 0 0 6px rgba(0, 100, 160, 0.40);
+      background: rgb(80, 80, 80); box-shadow: 0 0 6px rgba(0, 0, 0, 0.40);
     }
     body.theme-light #cursor-controls button,
     body.theme-light #cursor-controls .effect-row select {
-      background: rgba(0, 110, 160, 0.08); border-color: rgba(0, 110, 160, 0.30);
+      background: rgba(0, 0, 0, 0.08); border-color: rgba(0, 0, 0, 0.30);
     }
     body.theme-light #cursor-controls button:hover,
     body.theme-light #cursor-controls .effect-row select:hover {
-      background: rgba(0, 110, 160, 0.18);
+      background: rgba(0, 0, 0, 0.18);
     }
     body.theme-light #cursor-controls .effect-row select option {
-      background: #e8f8ff; color: rgba(0, 50, 80, 0.92);
+      background: #f5f5f5; color: rgba(0, 0, 0, 0.92);
     }
   `
   const style = document.createElement('style')
