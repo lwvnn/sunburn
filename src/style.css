@@ -1,3 +1,8 @@
+/* ── Google Fonts serif collection ──────────────────────────────────────────
+   Instrument Serif, Bodoni Moda, Cormorant Garamond, Spectral,
+   Libre Baskerville, DM Serif Display, Playfair Display */
+@import url('https://fonts.googleapis.com/css2?family=Instrument+Serif:ital@0;1&family=Bodoni+Moda:ital,opsz@0,6..96;1,6..96&family=Cormorant+Garamond:ital,wght@0,300;0,400;0,500;0,600;0,700;1,300;1,400;1,500;1,600;1,700&family=Spectral:ital,wght@0,200;0,300;0,400;0,500;0,600;0,700;0,800;1,200;1,300;1,400;1,500;1,600;1,700;1,800&family=Libre+Baskerville:ital,wght@0,400;0,700;1,400&family=DM+Serif+Display:ital@0;1&family=Playfair+Display:ital,wght@0,400;0,500;0,600;0,700;0,800;0,900;1,400;1,500;1,600;1,700;1,800;1,900&display=swap');
+
 /* ── Variable-weight web fonts ───────────────────────────────────────────
    Single .ttf per family carries every weight (100..900) via `wght` axis.
    Inter additionally has an `opsz` axis (we just inherit auto-optical sizing
@@ -63,7 +68,121 @@ html, body {
    screen) is position: fixed so it stays pinned to the viewport while the
    user scrolls; only the abstract "scroll progress" drifts. */
 body {
-  min-height: 300vh;
+  /* Three sections × ~500vh travel each = 1500vh of scrollable runway,
+     plus the 100vh viewport itself.  Section boundaries (sp = 0.25,
+     0.33, 0.60, 0.68) are defined in src/sections.ts.  Snap targets at
+     sp = 0, 0.33, 0.68. */
+  min-height: 1700vh;
+}
+
+/* ── Section-shift CSS variables ──────────────────────────────────────────
+   Written every frame from main.ts.  `--gallery-shift` ∈ [−1, +1]:
+     +1 = gallery fully below viewport (S1 / start)
+      0 = gallery on screen (S2)
+     −1 = gallery fully above viewport (S3 / end)
+   Fire canvas is shifted via ctx.translate (NOT CSS) so the name DOM
+   overlay above it doesn't get clipped along with the canvas content. */
+:root {
+  --gallery-shift: 1;
+  --menu-shift: 0;
+}
+#gallery {
+  position: fixed;
+  top: 0;
+  left: 0;
+  width: 100%;
+  height: 100vh;
+  z-index: 4;
+  background: #ffffff;
+  color: #111;
+  transform: translateY(calc(100vh * var(--gallery-shift)));
+  will-change: transform;
+  overflow: hidden;
+  pointer-events: none;
+  /* Perspective viewer for the 3D plane of cards. */
+  perspective: 1400px;
+  perspective-origin: 50% 32%;
+}
+#gallery.interactive { pointer-events: auto; }
+.gallery-stage {
+  position: absolute;
+  inset: 0;
+  transform-style: preserve-3d;
+}
+/* The 3-D plane that holds the cards.  Tilted with rotateX +
+   rotateZ so the surface reads as "viewed from 3/4 above".  A slow
+   `gallerySway` keyframes oscillates rotateY a couple of degrees, giving
+   the whole sheet a soft fabric undulation. */
+.gallery-plane {
+  position: absolute;
+  /* Oversize then pull back via negative offsets so card edges don't
+     show their grid clipping when the plane tilts. */
+  left: -15%;
+  top: -8%;
+  width: 130%;
+  height: 130%;
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  grid-auto-rows: 1fr;
+  gap: 40px;
+  padding: 80px;
+  box-sizing: border-box;
+  transform-style: preserve-3d;
+  transform-origin: 50% 40%;
+  transform: rotateX(56deg) rotateZ(-8deg) translateZ(-180px);
+  animation: gallerySway 9s ease-in-out infinite alternate;
+}
+@keyframes gallerySway {
+  0%   { transform: rotateX(56deg) rotateY(-3deg) rotateZ(-9deg) translateZ(-180px); }
+  100% { transform: rotateX(54deg) rotateY( 3deg) rotateZ(-7deg) translateZ(-200px); }
+}
+.card {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  justify-content: flex-end;
+  gap: 6px;
+  padding: 28px 26px;
+  background: #f7f7f7;
+  border: 1px solid #e2e2e2;
+  border-radius: 6px;
+  color: #111;
+  text-decoration: none;
+  font-family: "Inter", system-ui, sans-serif;
+  font-weight: 100;
+  transform-style: preserve-3d;
+  /* Per-card flutter — phase offset by --idx so adjacent cards lag,
+     giving the grid a wave-like undulation across its surface. */
+  --idx: 0;
+  animation: cardFlutter 5s ease-in-out infinite;
+  animation-delay: calc(var(--idx) * -0.4s);
+  transition: transform 240ms ease-out, background 240ms ease-out;
+}
+.card:hover {
+  background: #ffffff;
+  transform: translateZ(40px);
+}
+.card .card-num {
+  font-size: 11px;
+  letter-spacing: 0.18em;
+  color: #999;
+  text-transform: uppercase;
+}
+.card h3 {
+  margin: 6px 0 4px;
+  font-size: 26px;
+  font-weight: 100;
+  letter-spacing: 0.02em;
+}
+.card p {
+  margin: 0;
+  font-size: 13px;
+  line-height: 1.45;
+  color: #555;
+}
+@keyframes cardFlutter {
+  0%, 100% { transform: translateZ(0); }
+  50%      { transform: translateZ(32px); }
 }
 
 /* Hide the scrollbar (still scrollable via wheel / touch / keyboard). */
@@ -81,34 +200,24 @@ body { scrollbar-width: none; }
   pointer-events: none;
 }
 
+/* Name — pure DOM overlay above the fire canvas.  All styling driven by
+   inline styles written from main.ts each frame: position, font, text,
+   opacity and the colour (which lerps toward black as the white next-
+   page section slides up underneath it). */
 #name {
   position: fixed;
   top: 0;
   left: 0;
-  z-index: 2;
-  font: var(--name-font);
-  color: var(--name-color);
+  z-index: 6;
   white-space: nowrap;
   user-select: none;
   -webkit-user-select: none;
-  touch-action: none;
-  cursor: grab;
-  will-change: transform, opacity, color, text-shadow;
-  /* Charring visuals — driven by --char (0..1) */
-  color: color-mix(in oklab, var(--name-color) calc((1 - var(--char)) * 100%), #2a0e04);
-  text-shadow:
-    0 0 calc(var(--char) * 18px) rgba(255, 140, 40, calc(var(--char) * 0.9)),
-    0 0 calc(var(--char) * 36px) rgba(255, 60, 0, calc(var(--char) * 0.7));
-  transition: opacity 200ms ease-out;
-}
-
-#name.dragging {
-  cursor: grabbing;
-}
-
-#name.hidden {
-  opacity: 0;
   pointer-events: none;
+  will-change: transform, color, opacity;
+}
+
+#name.invert {
+  filter: invert(1);
 }
 
 #final {
@@ -160,21 +269,36 @@ body { scrollbar-width: none; }
   --menu-opacity: 0;
   /* Sensible fallback in case JS hasn't pushed a value yet. */
   --tip-color: #97c3f2;
+  /* Menu font — all overridable from the controls panel. */
+  --menu-font-family: "Uncut Sans", ui-monospace, Menlo, Consolas, monospace;
+  --menu-font-size: 18px;
+  --menu-font-weight: 700;
+  --menu-letter-spacing: 0.06em;
+  --menu-text-transform: uppercase;
 }
 
 #floating-menu {
   position: fixed;
   bottom: 36px;
   left: 50%;
-  transform: translateX(-50%);
+  /* `--menu-shift` is +1 below screen, 0 home, -1 above.  Written from
+     main.ts each frame so the menu travels with the fire — visible at
+     the bottom of the fire phase, off-screen during the gallery, back
+     to centred for the S3 fire return. */
+  transform: translate(-50%, calc(100vh * var(--menu-shift)));
   z-index: 5;
-  width: 145px;
+  /* No fixed width — the menu sizes to its widest link so the centered
+     transform lines it up over the viewport's midline regardless of the
+     current font / text length. */
   opacity: var(--menu-opacity);
   pointer-events: none;
-  font: 18px/1.45 "Uncut Sans", ui-monospace, Menlo, Consolas, monospace;
-  font-weight: bold;
-  text-transform: uppercase;
-  letter-spacing: 0.06em;
+  font-family: var(--menu-font-family);
+  font-size: var(--menu-font-size);
+  line-height: 1.45;
+  font-weight: var(--menu-font-weight);
+  text-transform: var(--menu-text-transform);
+  letter-spacing: var(--menu-letter-spacing);
+  text-align: center;
   color: var(--tip-color);
   text-shadow:
     0 0 1px var(--tip-color),
@@ -189,24 +313,22 @@ body { scrollbar-width: none; }
   margin: 0;
   padding: 0;
 }
-#floating-menu li { margin: 0; padding: 0; }
+/* Centre each link AND let the hover/focus background hug the word.
+   `li` is a centring track; `a` is inline-block so the highlight box
+   shrinks to fit the text rather than spanning the row. */
+#floating-menu li {
+  margin: 0;
+  padding: 0;
+  text-align: center;
+}
 
 #floating-menu a {
-  display: block;
-  padding: 2px 8px 2px 4px;
+  display: inline-block;
+  padding: 2px 10px;
   color: inherit;
   text-decoration: none;
   position: relative;
 }
-/* `>` chevron prefix — pseudo-element so the actual link text stays
-   clean for screen readers and copy-paste. */
-#floating-menu a::before {
-  content: "> ";
-  display: inline-block;
-  margin-right: 8px;
-  opacity: 0.85;
-}
-
 #floating-menu a:hover,
 #floating-menu a:focus,
 #floating-menu a:active {

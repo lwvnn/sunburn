@@ -8,6 +8,14 @@ import { createCursorEffect } from './cursor-effects'
 import { mountCursorEffectControls } from './cursor-effects-controls'
 import { createScrollArc } from './scroll-arc'
 import { mountScrollArcControls } from './scroll-arc-controls'
+import {
+  SNAP_PULL_RANGE,
+  fireShiftFor,
+  galleryShiftFor,
+  firePhaseFor,
+  fireIsVisible,
+  nearestSnapTarget,
+} from './sections'
 import quotes from './corpus/quotes.json'
 
 // ─── Corpus ────────────────────────────────────────────────────────────────
@@ -21,7 +29,7 @@ function shuffleAndJoin(pool: string[]): string {
     const j = (Math.random() * (i + 1)) | 0
     ;[a[i], a[j]] = [a[j], a[i]]
   }
-  return a.join(' ')
+  return a.join(' • ')
 }
 const corpus = shuffleAndJoin(quotes)
 
@@ -53,11 +61,35 @@ mountControls(fire)
 
 const name = createName(w, h)
 mountNameControls(name)
-fire.setMask(name)
+// Name is now a pure DOM overlay (see syncNameDOM below) rather than a
+// canvas-rendered mask cutout — no fire-interaction wiring.
 
 const cursorEffect = createCursorEffect()
 mountCursorEffectControls(cursorEffect)
 fire.setCursorEffect(cursorEffect)
+
+const centerRepelEffect = createCursorEffect()
+centerRepelEffect.setParams({
+  effect: 'repel',
+  fieldR: 1550,
+  amp: 73,
+  noiseAmp: 0.0,
+  fadeSpeed: 0.5,
+})
+
+const sideRepelParams = {
+  effect: 'repel' as const,
+  fieldR: 250,
+  amp: 50,
+  noiseAmp: 0.0,
+  fadeSpeed: 0.5,
+}
+
+const leftRepelEffect = createCursorEffect()
+leftRepelEffect.setParams(sideRepelParams)
+
+const rightRepelEffect = createCursorEffect()
+rightRepelEffect.setParams(sideRepelParams)
 
 const scrollArc = createScrollArc()
 mountScrollArcControls(scrollArc)
@@ -170,19 +202,76 @@ function applyScanlines(): void {
   ctx.restore()
 }
 
+// ── White-noise grain overlay ────────────────────────────────────────────
+// A small offscreen tile of random white pixels is regenerated every
+// `grainSpeed` frames and tiled across the canvas with additive blending.
+// Cheap because the tile is tiny (TILE × TILE) — the additive blit is the
+// only per-frame cost and it's a single fillRect.
+const GRAIN_TILE = 256
+const grainCanvas = document.createElement('canvas')
+grainCanvas.width = GRAIN_TILE
+grainCanvas.height = GRAIN_TILE
+const grainCtx = grainCanvas.getContext('2d')!
+let grainPattern: CanvasPattern | null = null
+let grainFrameCounter = 0
+
+function rebuildGrainTile(): void {
+  // Each pixel: chance to be a bright speck; otherwise transparent.  The
+  // alpha distribution skews bright, giving a sparse "shot noise" feel
+  // rather than a uniform haze (which 'lighter' would wash out anyway).
+  const img = grainCtx.createImageData(GRAIN_TILE, GRAIN_TILE)
+  const data = img.data
+  for (let i = 0; i < GRAIN_TILE * GRAIN_TILE; i++) {
+    const v = Math.random()
+    // ~40 % of pixels are lit; the rest stay transparent.
+    const alpha = v < 0.6 ? 0 : Math.round((v - 0.6) * 2.5 * 255)
+    const idx = i * 4
+    data[idx]     = 255
+    data[idx + 1] = 255
+    data[idx + 2] = 255
+    data[idx + 3] = alpha
+  }
+  grainCtx.putImageData(img, 0, 0)
+  grainPattern = ctx.createPattern(grainCanvas, 'repeat')
+}
+
+function applyGrain(): void {
+  const p = fire.getParams()
+  if (p.grainOpacity <= 0) return
+  const reshuffleEvery = Math.max(1, Math.round(p.grainSpeed))
+  if (!grainPattern || grainFrameCounter >= reshuffleEvery) {
+    rebuildGrainTile()
+    grainFrameCounter = 0
+  } else {
+    grainFrameCounter++
+  }
+  if (!grainPattern) return
+  ctx.save()
+  ctx.setTransform(1, 0, 0, 1, 0, 0)
+  // Optional chunkier grain: when grainScale > 1 the pattern is upscaled
+  // by that factor, producing larger "pixels" of noise.
+  const scale = Math.max(1, p.grainScale | 0)
+  if (scale !== 1) ctx.scale(scale, scale)
+  ctx.globalAlpha = p.grainOpacity
+  ctx.globalCompositeOperation = 'lighter'
+  ctx.fillStyle = grainPattern
+  ctx.fillRect(0, 0, canvas.width / scale, canvas.height / scale)
+  ctx.restore()
+}
+
 // ── Scroll snapping ───────────────────────────────────────────────────────
 // Once the user scrolls past SNAP_THRESHOLD of the runway, ease the rest of
 // the way to 100% after they stop interacting.  Scrolling upward (wheel
 // delta < 0, touch drag back, or any scroll-event with decreasing scrollY)
 // sets `userOverride` so the snap won't re-fire until the user goes back
 // below the threshold.  Snap is cancellable mid-animation by wheel/touch.
-const SNAP_THRESHOLD = 0.8
+const SNAP_THRESHOLD = 0.85
 /** Idle time after the last scroll event before the snap fires (ms). */
-const SNAP_DEBOUNCE_MS = 180
+const SNAP_DEBOUNCE_MS = 220
 /** Spring stiffness (ω²).  Higher = quicker pull.  At critical damping
- *  (damping = 2·ω) the settle-to-1% time is ≈ 4.6/ω seconds, so
- *  stiffness = 6 ⇒ ≈ 1.88 s natural settle, longer with high initial velocity. */
-const SNAP_STIFFNESS = 6
+ *  (damping = 2·ω) the settle-to-1% time is ≈ 4.6/ω seconds.  Stiffness
+ *  2.5 ⇒ ≈ 2.9 s settle for a slow, soft pull toward 100%. */
+const SNAP_STIFFNESS = 2.5
 const SNAP_DAMPING = 2 * Math.sqrt(SNAP_STIFFNESS)
 /** Settle thresholds: position within this many pixels AND velocity below
  *  this many px/s ⇒ snap is "done". */
@@ -199,14 +288,21 @@ let userOverride = false
 
 function trySnap(): void {
   if (snapState !== 'idle') return
-  if (userOverride) return
+  // Fires after the debounce period — the user has stopped scrolling,
+  // so any earlier "escaping a snap upward" lock is cleared.
+  userOverride = false
   const max = document.documentElement.scrollHeight - window.innerHeight
   if (max <= 0) return
   const p = window.scrollY / max
-  if (p < SNAP_THRESHOLD || p > 0.999) return
+  // Find the nearest of the section-boundary snap targets; engage the
+  // spring only when the user has settled close enough to that target
+  // to be "in its gravity well".  This way the user keeps free control
+  // through the middle of any section.
+  const { target, distance } = nearestSnapTarget(p)
+  if (distance < 0.001 || distance > SNAP_PULL_RANGE) return
   snapState = 'snapping'
   snapLastT = performance.now()
-  snapTargetY = max
+  snapTargetY = target * max
   // Seed the spring with the current inertia velocity (per-frame → per-sec)
   // so the moment snap engages, the page is already moving at exactly the
   // speed the user left it at.  Then clear the inertia buffer so the two
@@ -222,10 +318,11 @@ window.addEventListener('scroll', () => {
   // Ignore scroll events caused by our own animation.
   if (snapState === 'snapping') return
 
-  // Direction: upward user-scroll disables snap until p drops below threshold.
+  // Upward scroll temporarily blocks the snap from re-engaging — the
+  // user is escaping a target.  trySnap() itself clears this flag once
+  // the debounce settles (i.e. the user has stopped scrolling), so the
+  // next idle period correctly re-evaluates the nearest target.
   if (y < prevY) userOverride = true
-  const max = document.documentElement.scrollHeight - window.innerHeight
-  if (max > 0 && y / max < SNAP_THRESHOLD) userOverride = false
 
   // Debounced arm — fires snap after a short idle.
   window.clearTimeout(scrollDebounceId)
@@ -340,7 +437,25 @@ function frame(t: number): void {
   updateInertia()
   applyScrollProgress(t)
   ctx.clearRect(0, 0, w, h)
-  fire.draw(ctx, t)
+  // ── Fire pass ────────────────────────────────────────────────────────
+  // Fire visibility and vertical offset are functions of scroll
+  // progress, computed in sections.ts.  We translate the drawing
+  // context (not the canvas DOM transform) so the name overlay above
+  // stays anchored to its real screen position, and we skip drawing
+  // entirely while the fire is fully off-screen during the gallery.
+  const maxScrollF = document.documentElement.scrollHeight - window.innerHeight
+  const spF = maxScrollF > 0 ? clamp01(window.scrollY / maxScrollF) : 0
+  if (fireIsVisible(spF)) {
+    const fireShift = fireShiftFor(spF)
+    if (fireShift !== 0) {
+      ctx.save()
+      ctx.translate(0, fireShift * h)
+      fire.draw(ctx, t)
+      ctx.restore()
+    } else {
+      fire.draw(ctx, t)
+    }
+  }
 
   // Publish the live (hue-rotated) tip palette colour to a CSS variable so
   // DOM widgets (e.g. the floating menu) can tint themselves to match the
@@ -350,25 +465,72 @@ function frame(t: number): void {
     fire.getCurrentTipColor(t),
   )
 
-  // Name fade-in over the last NAME_FADE_RANGE of scroll.  The mask cutout
-  // in the fire stays active throughout (so the dark name-shaped hole is
-  // visible from the start) — only the rendered glyphs fade in.  We wrap
-  // name.draw in save/restore so the alpha doesn't bleed into the
-  // subsequent pixelation / scanline passes.
+  // Name overlay — pure DOM, not painted to the canvas.  Its opacity
+  // ramps in over the last NAME_FADE_RANGE of whichever fire phase is
+  // currently active (S1 intro climaxing into T1, or T2 climaxing into
+  // the S3 return).  Visibility is therefore tied to the fire being on
+  // screen rather than to an absolute scroll fraction.
   const maxScroll = document.documentElement.scrollHeight - window.innerHeight
   const sp = maxScroll > 0 ? clamp01(window.scrollY / maxScroll) : 0
+  const firePhase = firePhaseFor(sp)
+  const fireShift = fireShiftFor(sp)
+  // Name fades in as the fire phase reaches its end, and STAYS visible
+  // throughout the rest of the experience. We invert its colors when
+  // the white gallery section covers the screen.
   const nameAlpha = smoothstep(
-    clamp01((sp - (1 - NAME_FADE_RANGE)) / NAME_FADE_RANGE),
+    clamp01((firePhase - (1 - NAME_FADE_RANGE)) / NAME_FADE_RANGE),
   )
-  if (nameAlpha > 0.001) {
-    ctx.save()
-    ctx.globalAlpha = nameAlpha
-    name.draw(ctx, t)
-    ctx.restore()
-  }
+  syncNameDOM(nameAlpha)
 
   applyPixelation()
   applyScanlines()
+  applyGrain()
+}
+
+// ─── Name overlay (DOM, not canvas) ────────────────────────────────────────
+const nameEl = document.getElementById('name')
+let lastNameKey = ''
+let lastNameColor = ''
+let lastNameOpacity = -1
+
+/** Push the current name params + opacity to the DOM `#name` element.
+ *  Diff-based so identical frames stop short of touching the DOM (style
+ *  writes trigger layout in some browsers).  The name fades out before
+ *  the white gallery covers it, so we no longer need the white-bg
+ *  colour inversion that used to live here. */
+function syncNameDOM(opacity: number): void {
+  if (!nameEl) return
+  const np = name.getParams()
+  // Compose a "layout key" — text + font + position.  When it doesn't
+  // change frame-to-frame we skip the matching style writes entirely.
+  const key =
+    np.text + '|' + np.fontFamily + '|' + np.fontSize + '|' +
+    np.fontWeight + '|' + np.letterSpacing + '|' +
+    np.cxFrac + '|' + np.cyFrac + '|' +
+    np.scaleX + '|' + np.scaleY
+  if (key !== lastNameKey) {
+    nameEl.textContent = np.text
+    nameEl.style.font =
+      `${np.fontWeight} ${np.fontSize}px ${np.fontFamily}`
+    nameEl.style.letterSpacing = `${np.letterSpacing}px`
+    nameEl.style.left = `${np.cxFrac * 100}vw`
+    nameEl.style.top = `${np.cyFrac * 100}vh`
+    // Centring translate first, then independent X/Y scale — order matters
+    // (scale happens around the already-centred origin so the name keeps
+    // its centre at cxFrac / cyFrac regardless of how stretched it is).
+    nameEl.style.transform =
+      `translate(-50%, -50%) scale(${np.scaleX}, ${np.scaleY})`
+    lastNameKey = key
+  }
+  if (opacity !== lastNameOpacity) {
+    nameEl.style.opacity = opacity.toFixed(3)
+    lastNameOpacity = opacity
+  }
+  // Use the user's chosen colour straight from name params.
+  if (np.color !== lastNameColor) {
+    nameEl.style.color = np.color
+    lastNameColor = np.color
+  }
 }
 
 requestAnimationFrame(frame)
@@ -426,20 +588,48 @@ function applyScrollProgress(timeMs: number): void {
   const raw = max > 0 ? window.scrollY / max : 0
   const p = clamp01(raw)
 
+  // ── Section schedule ───────────────────────────────────────────────────
+  //   sections.ts owns the boundaries.  Compute the three driven numbers
+  //   (firePhase, gallery shift, menu shift) and publish them via CSS
+  //   variables.  Everything downstream (keyframe sampling, name fade,
+  //   gallery transform, menu transform) reads from these so the
+  //   architecture stays consistent.
+  const firePhase = firePhaseFor(p)
+  const galleryShift = galleryShiftFor(p)
+  const fireShift = fireShiftFor(p)
+  if (galleryShift !== lastGalleryShift) {
+    document.documentElement.style.setProperty(
+      '--gallery-shift',
+      galleryShift.toFixed(4),
+    )
+    const interactive = Math.abs(galleryShift) < 0.05
+    if (interactive !== lastGalleryInteractive) {
+      galleryEl?.classList.toggle('interactive', interactive)
+      lastGalleryInteractive = interactive
+    }
+    
+    // Invert the name block color when the white gallery section is covering the screen
+    if (nameEl) {
+      nameEl.classList.toggle('invert', Math.abs(galleryShift) < 0.5)
+    }
+
+    lastGalleryShift = galleryShift
+  }
+
   // Keyframes come live from the scroll-arc store, so any edit in its
   // panel shows up next frame with no extra wiring.
   const kfs = scrollArc.getKeyframes()
   if (kfs.length < 2) return
 
-  // Find the segment whose [at_i, at_{i+1}] contains p.
+  // Find the segment whose [at_i, at_{i+1}] contains firePhase.
   let i = 0
-  while (i < kfs.length - 1 && kfs[i + 1].at < p) i++
+  while (i < kfs.length - 1 && kfs[i + 1].at < firePhase) i++
   const k1 = kfs[i]
   const k2 = kfs[Math.min(i + 1, kfs.length - 1)]
   const span = k2.at - k1.at
   // Local progress within this segment.  Smoothstep eases each segment
   // independently, so every keyframe boundary feels like a soft "settle".
-  const localRaw = span > 1e-6 ? (p - k1.at) / span : 0
+  const localRaw = span > 1e-6 ? (firePhase - k1.at) / span : 0
   const t = smoothstep(clamp01(localRaw))
 
   // Union of every key mentioned across these two keyframes only — keys
@@ -474,30 +664,31 @@ function applyScrollProgress(timeMs: number): void {
     const target = interp.flameRadialReach ?? 0
     interp.flameRadialReach = smoothstep(introT) * target
   }
+  
+  // Open the center repel hole over a longer duration so it opens slower,
+  // using an "ease out back" curve for a slight overshoot.
+  // We use an unbounded time fraction so the delayed animation can finish
+  // even after introT caps at 1.0.
+  const tFrac = introStartMs >= 0 ? (timeMs - introStartMs) / INTRO_DURATION_MS : 0
+  let u = clamp01((tFrac - 0.8) * 1.25) // Delayed start (1.6s), takes 1.6s to finish
+  u = smoothstep(u) // Apply an ease-in so the opening starts slower
+  const c1 = 1.2 // Lower coefficient for a gentler overshoot
+  const c3 = c1 + 1
+  const easeOutBack = 1 + c3 * Math.pow(u - 1, 3) + c1 * Math.pow(u - 1, 2)
+  const centerRepelStrength = u > 0 ? easeOutBack : 0
+
+  // Pupils start looking around slightly later, smoothly fading in
+  // tFrac=1.2 is 2.4s (eyes halfway open), tFrac=1.8 is 3.6s
+  let lookStrength = clamp01((tFrac - 1.2) * 1.66)
+  lookStrength = smoothstep(lookStrength)
+
+  fire.setCenterRepels(centerRepelEffect, leftRepelEffect, rightRepelEffect, centerRepelStrength, lookStrength)
 
   fire.setParams(interp)
 
-  // ── Floating bottom menu fade ──────────────────────────────────────────
-  // Smoothstep-eased ramp over the last MENU_FADE_RANGE of scroll.  Below
-  // the ramp, the menu is fully transparent and non-interactive; above
-  // halfway it accepts pointer events.  Pure CSS-variable write — cheap.
-  const menuOpacity = smoothstep(
-    clamp01((p - (1 - MENU_FADE_RANGE)) / MENU_FADE_RANGE),
-  )
-  if (menuOpacity !== lastMenuOpacity) {
-    document.documentElement.style.setProperty('--menu-opacity', menuOpacity.toFixed(3))
-    const interactive = menuOpacity > 0.5
-    if (interactive !== lastMenuInteractive) {
-      floatingMenu?.classList.toggle('interactive', interactive)
-      lastMenuInteractive = interactive
-    }
-    lastMenuOpacity = menuOpacity
-  }
+  // Removed floating bottom menu fade
 }
 
-/** Fraction of total scroll over which the bottom menu fades in.  0.15 =
- *  starts appearing at 85% scroll, fully solid at 100%. */
-const MENU_FADE_RANGE = 0.15
-const floatingMenu = document.getElementById('floating-menu')
-let lastMenuOpacity = -1
-let lastMenuInteractive = false
+const galleryEl = document.getElementById('gallery')
+let lastGalleryShift = NaN
+let lastGalleryInteractive = false

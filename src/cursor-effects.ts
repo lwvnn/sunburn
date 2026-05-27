@@ -48,11 +48,11 @@ export interface CursorEffectParams {
 }
 
 export const CURSOR_EFFECT_DEFAULTS: CursorEffectParams = {
-  effect: 'whip',
-  fieldR: 95,
-  amp: 36,
-  noiseAmp: 0.38,
-  fadeSpeed: 3.5,
+  effect: 'repel',
+  fieldR: 400,
+  amp: 65,
+  noiseAmp: 0.0,
+  fadeSpeed: 0.5,
 }
 
 // Spatial / temporal scale of the border noise. Kept as module constants —
@@ -75,7 +75,7 @@ export interface CursorEffect {
     cursorX: number,
     cursorY: number,
     timeMs: number,
-    ce: number,
+    ce: number
   ): readonly [number, number]
 }
 
@@ -88,7 +88,6 @@ export function createCursorEffect(): CursorEffect {
     setParams: (p) => {
       Object.assign(params, p)
     },
-
     displace(charX, charY, cursorX, cursorY, timeMs, ce) {
       if (ce <= 0.001 || params.fieldR <= 0) return [charX, charY]
 

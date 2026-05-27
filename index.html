@@ -9,12 +9,25 @@
   <body>
     <canvas id="fire"></canvas>
     <div id="name" aria-label="Drag my name into the fire"></div>
-    <nav id="floating-menu" aria-label="Site navigation">
-      <ul>
-        <li><a href="#projects">PROJECTS</a></li>
-        <li><a href="#contacts">CONTACTS</a></li>
-      </ul>
-    </nav>
+
+    <!-- Section 2: projects gallery.  White background; cards laid out
+         as a 3D plane tilted with rotateX/Z so it reads as "the surface
+         viewed from 3/4 above".  Plane + cards have CSS keyframe
+         animations giving a slow fabric-like sway.  Position:fixed plus
+         a translateY driven from main.ts so it slides up from below
+         during T1 and continues up off-screen during T2. -->
+    <section id="gallery">
+      <div class="gallery-stage">
+        <div class="gallery-plane">
+          <a class="card" style="--idx:0" href="#"><span class="card-num">01</span><h3>Project Alpha</h3><p>Placeholder description for the first project. Replace with real copy later.</p></a>
+          <a class="card" style="--idx:1" href="#"><span class="card-num">02</span><h3>Project Beta</h3><p>Placeholder description for the second project. Replace with real copy later.</p></a>
+          <a class="card" style="--idx:2" href="#"><span class="card-num">03</span><h3>Project Gamma</h3><p>Placeholder description for the third project. Replace with real copy later.</p></a>
+          <a class="card" style="--idx:3" href="#"><span class="card-num">04</span><h3>Project Delta</h3><p>Placeholder description for the fourth project. Replace with real copy later.</p></a>
+          <a class="card" style="--idx:4" href="#"><span class="card-num">05</span><h3>Project Epsilon</h3><p>Placeholder description for the fifth project. Replace with real copy later.</p></a>
+          <a class="card" style="--idx:5" href="#"><span class="card-num">06</span><h3>Project Zeta</h3><p>Placeholder description for the sixth project. Replace with real copy later.</p></a>
+        </div>
+      </div>
+    </section>
     <script type="module" src="/src/main.ts"></script>
   </body>
 </html>

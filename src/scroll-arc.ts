@@ -19,11 +19,12 @@ export interface ScrollKeyframe {
 
 /** Starting keyframes — match the current behaviour at module load. */
 export const DEFAULT_KEYFRAMES: ScrollKeyframe[] = [
-  { at: 0.0, params: { flameRadialReach: 1, sphereRadiusFrac: 0.972, sphereCxFrac: 0.507 } },
-  { at: 1.0, params: { flameRadialReach: 1, sphereRadiusFrac: 1.413, sphereCxFrac: 0.507, sphereCyFrac: 2.063 } }
+  { at: 0.0, params: { flameRadialReach: 1, sphereCxFrac: 0.5, sphereCyFrac: 2, sphereRadiusFrac: 1 } },
+  { at: 1.0, params: { flameRadialReach: 1, sphereCxFrac: 0.5, sphereCyFrac: 1.965, sphereRadiusFrac: 1.227 } }
 ]
 
 const STORAGE_KEY = 'scroll-arc-v1'
+const SAVED_DEFAULTS_KEY = 'scroll-arc-saved-defaults-v1'
 
 export interface ScrollArc {
   getKeyframes(): readonly ScrollKeyframe[]
@@ -38,8 +39,10 @@ export interface ScrollArc {
   addKeyframe(at: number, params: Partial<FireParams>): void
   /** Remove keyframe `index`.  No-op if it would leave fewer than 2. */
   removeKeyframe(index: number): void
-  /** Reset to DEFAULT_KEYFRAMES and clear persisted state. */
+  /** Reset to DEFAULT_KEYFRAMES (or saved defaults if present) and clear persisted state. */
   reset(): void
+  /** Persist current keyframes as the new "saved defaults" for future resets. */
+  saveAsDefaults(): void
   /** Subscribe to mutations.  Returns an unsubscribe callback. */
   subscribe(cb: () => void): () => void
 }
@@ -48,9 +51,9 @@ function deepClone(kfs: readonly ScrollKeyframe[]): ScrollKeyframe[] {
   return kfs.map((k) => ({ at: k.at, params: { ...k.params } }))
 }
 
-function loadPersisted(): ScrollKeyframe[] | null {
+function loadPersisted(key: string = STORAGE_KEY): ScrollKeyframe[] | null {
   try {
-    const raw = localStorage.getItem(STORAGE_KEY)
+    const raw = localStorage.getItem(key)
     if (!raw) return null
     const parsed = JSON.parse(raw)
     if (!Array.isArray(parsed)) return null
@@ -129,13 +132,21 @@ export function createScrollArc(): ScrollArc {
     },
 
     reset() {
-      keyframes = deepClone(DEFAULT_KEYFRAMES)
+      // Try saved defaults first, then fall back to hardcoded ones.
+      const saved = loadPersisted(SAVED_DEFAULTS_KEY)
+      keyframes = saved ? deepClone(saved) : deepClone(DEFAULT_KEYFRAMES)
       try {
         localStorage.removeItem(STORAGE_KEY)
       } catch {
         /* ignore */
       }
       emit()
+    },
+
+    saveAsDefaults() {
+      try {
+        localStorage.setItem(SAVED_DEFAULTS_KEY, JSON.stringify(keyframes))
+      } catch { /* ignore */ }
     },
 
     subscribe(cb) {

@@ -69,28 +69,46 @@ export interface NameParams {
   glitchIntensity: number
   /** Glitch animation rate (Hz). */
   glitchSpeed: number
+  // ── Independent visual scale (applied via CSS transform) ───────────────
+  /** Horizontal scale of the rendered name — stretches the glyphs wider
+   *  without changing the font size or the layout's mask metrics.  1 = no
+   *  change, 2 = double width, 0.5 = half. */
+  scaleX: number
+  /** Vertical scale of the rendered name — taller / shorter glyphs without
+   *  changing font size.  1 = no change. */
+  scaleY: number
 }
 
 export const NAME_DEFAULTS: NameParams = {
   text: 'ELVIN SAAN',
-  fontFamily: '"Inter", system-ui, sans-serif',
-  fontSize: 139,
+  fontFamily: '"Cormorant Garamond", "Garamond", serif',
+  fontSize: 48,
   fontWeight: 100,
   letterSpacing: 7.1,
   cxFrac: 0.5,
-  cyFrac: 0.11,
-  color: '#e60f0f',
+  cyFrac: 0.045,
+  color: '#ffffff',
   maskPadding: 0,
   strokeColor: '#ffffff',
   strokeWidth: 0,
-  glitch: 'scramble',
-  glitchIntensity: 0.25,
-  glitchSpeed: 12.3,
+  glitch: 'none',
+  glitchIntensity: 0.17,
+  glitchSpeed: 3.8,
+  scaleX: 1,
+  scaleY: 1,
 }
 
 export interface NameRenderer extends FireMask {
-  /** `timeMs` drives glitch animation. Pass the rAF timestamp. */
-  draw(ctx: CanvasRenderingContext2D, timeMs?: number): void
+  /** `timeMs` drives glitch animation. Pass the rAF timestamp.
+   *  `colorOverride` temporarily replaces `params.color` for this draw —
+   *  used by main.ts to fade the name toward black when the white
+   *  next-page section slides up behind it (without mutating the
+   *  user-saved colour). */
+  draw(
+    ctx: CanvasRenderingContext2D,
+    timeMs?: number,
+    colorOverride?: string,
+  ): void
   resize(w: number, h: number): void
   setParams(partial: Partial<NameParams>): void
   getParams(): Readonly<NameParams>
@@ -201,9 +219,9 @@ export function createName(
 
   // ── Glitch implementations ─────────────────────────────────────────────
 
-  function drawNone(ctx: CanvasRenderingContext2D, txt: string, x: number, y: number): void {
+  function drawNone(ctx: CanvasRenderingContext2D, txt: string, x: number, y: number, fillColor: string): void {
     ctx.textAlign = 'center'
-    ctx.fillStyle = params.color
+    ctx.fillStyle = fillColor
     ctx.fillText(txt, x, y)
   }
 
@@ -236,9 +254,10 @@ export function createName(
     x: number,
     y: number,
     t: number,
+    fillColor: string,
   ): void {
     ctx.textAlign = 'center'
-    ctx.fillStyle = params.color
+    ctx.fillStyle = fillColor
     // Rough text bbox (measureText is reliable for width; height approx
     // from fontSize × line-height ratio).
     const metrics = ctx.measureText(txt)
@@ -270,19 +289,23 @@ export function createName(
     x: number,
     y: number,
     t: number,
+    fillColor: string,
   ): void {
     const step = Math.floor(t * params.glitchSpeed)
     const { positions } = centerPositions(ctx, txt, x)
     ctx.textAlign = 'center'
-    ctx.fillStyle = params.color
+    ctx.fillStyle = fillColor
     for (let i = 0; i < txt.length; i++) {
       let ch = txt[i]
-      const seed = i * 13 + step
-      // Scramble probability scales with intensity, capped at 0.6 so the
-      // name stays recognisable even at max.
-      if (rand01(seed) < params.glitchIntensity * 0.6) {
-        const ri = Math.floor(rand01(seed * 31 + 7) * SCRAMBLE_CHARS.length)
-        ch = SCRAMBLE_CHARS[ri]
+      // Preserve whitespace — only scramble visible glyphs.
+      if (ch !== ' ' && ch !== '\t') {
+        const seed = i * 13 + step
+        // Scramble probability scales with intensity, capped at 0.6 so the
+        // name stays recognisable even at max.
+        if (rand01(seed) < params.glitchIntensity * 0.6) {
+          const ri = Math.floor(rand01(seed * 31 + 7) * SCRAMBLE_CHARS.length)
+          ch = SCRAMBLE_CHARS[ri]
+        }
       }
       ctx.fillText(ch, positions[i], y)
     }
@@ -294,11 +317,12 @@ export function createName(
     x: number,
     y: number,
     t: number,
+    fillColor: string,
   ): void {
     const step = Math.floor(t * params.glitchSpeed)
     const { positions } = centerPositions(ctx, txt, x)
     ctx.textAlign = 'center'
-    ctx.fillStyle = params.color
+    ctx.fillStyle = fillColor
     const amp = params.glitchIntensity * 12
     for (let i = 0; i < txt.length; i++) {
       const seed = i * 17 + step
@@ -318,12 +342,16 @@ export function createName(
       return maskData[(iy * maskW + ix) * 4 + 3] > 127
     },
 
-    draw(ctx, timeMs = 0) {
+    draw(ctx, timeMs = 0, colorOverride) {
       const txt = params.text
       if (!txt) return
       const t = timeMs * 0.001
       const x = w * params.cxFrac
       const y = h * params.cyFrac
+      // Single source of truth for "what colour to fill the glyphs with"
+      // for this draw — the override wins when supplied, otherwise we
+      // respect whatever the user set in the controls panel.
+      const fillColor = colorOverride ?? params.color
 
       ctx.save()
       ctx.font = fontShorthand()
@@ -343,12 +371,12 @@ export function createName(
 
       // ── Fill / glitch ─────────────────────────────────────────────────
       switch (params.glitch) {
-        case 'chromatic': drawChromatic(ctx, txt, x, y, t); break
-        case 'slice':     drawSlice(ctx, txt, x, y, t);     break
-        case 'scramble':  drawScramble(ctx, txt, x, y, t);  break
-        case 'jitter':    drawJitter(ctx, txt, x, y, t);    break
+        case 'chromatic': drawChromatic(ctx, txt, x, y, t);            break
+        case 'slice':     drawSlice(ctx, txt, x, y, t, fillColor);     break
+        case 'scramble':  drawScramble(ctx, txt, x, y, t, fillColor);  break
+        case 'jitter':    drawJitter(ctx, txt, x, y, t, fillColor);    break
         case 'none':
-        default:          drawNone(ctx, txt, x, y);         break
+        default:          drawNone(ctx, txt, x, y, fillColor);         break
       }
 
       ctx.restore()

@@ -30,6 +30,14 @@ const FONT_FAMILIES: Array<{ label: string; stack: string }> = [
   { label: 'Space Grotesk',   stack: '"Space Grotesk", system-ui, sans-serif' },
   { label: 'JetBrains Mono',  stack: '"JetBrains Mono", ui-monospace, monospace' },
   { label: 'Uncut Sans',      stack: '"Uncut Sans", system-ui, sans-serif' },
+  // Google Fonts serif collection.
+  { label: 'Instrument Serif',  stack: '"Instrument Serif", Georgia, serif' },
+  { label: 'Bodoni Moda',       stack: '"Bodoni Moda", "Bodoni MT", Georgia, serif' },
+  { label: 'Cormorant Garamond',stack: '"Cormorant Garamond", "Garamond", serif' },
+  { label: 'Spectral',          stack: '"Spectral", Georgia, serif' },
+  { label: 'Libre Baskerville', stack: '"Libre Baskerville", Baskerville, serif' },
+  { label: 'DM Serif Display',  stack: '"DM Serif Display", Georgia, serif' },
+  { label: 'Playfair Display',  stack: '"Playfair Display", "Didot", Georgia, serif' },
   // System fallbacks.
   { label: 'Georgia',   stack: 'Georgia, "Times New Roman", serif' },
   { label: 'Times',     stack: '"Times New Roman", Times, serif' },
@@ -57,49 +65,87 @@ interface SliderDef {
   format?: (v: number) => string
 }
 
+/*
+ * Sliders are grouped by what they SHAPE in the simulation:
+ *   1. Typography     — glyph dimensions + stream rate
+ *   2. Tongues        — big / wobble noise that drives flame length
+ *   3. Flicker        — per-cell intensity noise (palette modulation)
+ *   4. Edges          — alpha fade near sphere surface and flame tip
+ *   5. Central peak   — single tongue lifted higher than its neighbours
+ *   6. Palette        — colour-stop animation
+ *   7. Swirl          — global rotation noise displacing chars
+ *   8. Curl vortices  — localised whirlpool eddies with randomised values
+ *
+ * Sphere position / radius / flame reach are NOT here — they're driven by
+ * the Scroll Arc keyframes, so exposing them in this panel would clash.
+ */
 const SLIDERS: SliderDef[] = [
-  { key: 'fontSize', label: 'font size', min: 6, max: 40, step: 1 },
-  { key: 'fontWeight', label: 'font weight', min: 100, max: 900, step: 100 },
-  { key: 'lineHeight', label: 'line height', min: 8, max: 60, step: 1 },
-  { key: 'letterSpacing', label: 'letter spacing', min: -3, max: 12, step: 0.1 },
-  { key: 'textScrollSpeed', label: 'scroll px/s', min: 0, max: 150, step: 1 },
-  { key: 'fireBandFrac', label: 'band height', min: 0.2, max: 0.9, step: 0.01 },
-  { key: 'tongueBase', label: 'base height', min: 0, max: 1, step: 0.01 },
-  { key: 'tongueBigAmp', label: 'tongue amp ⨉', min: 0, max: 0.6, step: 0.01 },
-  { key: 'tongueBigSx', label: 'tongue width', min: 0.0005, max: 0.1, step: 0.0005, format: v => v.toFixed(4) },
-  { key: 'tongueBigSt', label: 'tongue speed', min: 0, max: 3, step: 0.05 },
-  { key: 'tongueMedAmp', label: 'wobble amp', min: 0, max: 0.4, step: 0.01 },
-  { key: 'tongueMedSx', label: 'wobble width', min: 0.001, max: 0.05, step: 0.001, format: v => v.toFixed(3) },
-  { key: 'tongueMedSt', label: 'wobble speed', min: 0, max: 4, step: 0.05 },
-  { key: 'flickerAmp',      label: 'flicker amp',     min: 0,     max: 0.6, step: 0.01 },
-  { key: 'flickerBias',     label: 'flicker bias',    min: -0.5,  max: 0.5, step: 0.01 },
-  { key: 'flickerContrast', label: 'flicker curve',   min: 0.3,   max: 3,   step: 0.05 },
-  { key: 'flickerSx',       label: 'flicker x scale', min: 0.001, max: 0.2, step: 0.001, format: v => v.toFixed(3) },
-  { key: 'flickerSy',       label: 'flicker y scale', min: 0.001, max: 0.2, step: 0.001, format: v => v.toFixed(3) },
-  { key: 'flickerSt',       label: 'flicker speed',   min: 0,     max: 4,   step: 0.05 },
-  { key: 'tipFadePx', label: 'tip fade px', min: 0, max: 1000, step: 1 },
-  // ── Eclipse sphere ──────────────────────────────────────────────────────
-  { key: 'sphereCxFrac',     label: 'sphere x',      min: -0.5, max: 1.5, step: 0.01 },
-  { key: 'sphereCyFrac',     label: 'sphere y',      min: -5.0, max: 5.0, step: 0.01 },
-  { key: 'sphereRadiusFrac', label: 'sphere radius', min:  0.0, max: 2.0, step: 0.01 },
-  { key: 'flameRadialReach', label: 'flame reach',   min:  0.05, max: 1.0, step: 0.01 },
-  { key: 'sphereFadePx',     label: 'sphere fade px', min:  0,   max: 80,  step: 1    },
-  // ── Palette animation ──────────────────────────────────────────────────
-  { key: 'colorHueShiftSpeed', label: 'hue shift °/s', min:  0,   max: 360, step: 1    },
-  // ── Tip-swirl noise (sphere mode) ──────────────────────────────────────
-  { key: 'swirlStrength', label: 'swirl amount', min: 0,     max: 5, step: 0.001 },
+  // ── 1. Typography ─────────────────────────────────────────────────────
+  { key: 'fontSize',       label: 'font size',      min: 6,    max: 40,  step: 1   },
+  { key: 'fontWeight',     label: 'font weight',    min: 100,  max: 900, step: 100 },
+  { key: 'lineHeight',     label: 'line height',    min: 8,    max: 60,  step: 1   },
+  { key: 'letterSpacing',  label: 'letter spacing', min: -3,   max: 12,  step: 0.1 },
+  { key: 'textScrollSpeed',label: 'scroll px/s',    min: 0,    max: 150, step: 1   },
+
+  // ── 2. Tongues ────────────────────────────────────────────────────────
+  { key: 'tongueBase',  label: 'base height',  min: 0,      max: 1,    step: 0.01   },
+  { key: 'tongueBigAmp',label: 'tongue amp ⨉', min: 0,      max: 0.6,  step: 0.01   },
+  { key: 'tongueBigSx', label: 'tongue width', min: 0.0005, max: 0.1,  step: 0.0005, format: v => v.toFixed(4) },
+  { key: 'tongueBigSt', label: 'tongue speed', min: 0,      max: 3,    step: 0.05   },
+  { key: 'tongueMedAmp',label: 'wobble amp',   min: 0,      max: 0.4,  step: 0.01   },
+  { key: 'tongueMedSx', label: 'wobble width', min: 0.001,  max: 0.05, step: 0.001,  format: v => v.toFixed(3) },
+  { key: 'tongueMedSt', label: 'wobble speed', min: 0,      max: 4,    step: 0.05   },
+
+  // ── 3. Flicker ────────────────────────────────────────────────────────
+  { key: 'flickerAmp',     label: 'flicker amp',     min: 0,     max: 0.6, step: 0.01 },
+  { key: 'flickerBias',    label: 'flicker bias',    min: -0.5,  max: 0.5, step: 0.01 },
+  { key: 'flickerContrast',label: 'flicker curve',   min: 0.3,   max: 3,   step: 0.05 },
+  { key: 'flickerSx',      label: 'flicker x scale', min: 0.001, max: 0.2, step: 0.001, format: v => v.toFixed(3) },
+  { key: 'flickerSy',      label: 'flicker y scale', min: 0.001, max: 0.2, step: 0.001, format: v => v.toFixed(3) },
+  { key: 'flickerSt',      label: 'flicker speed',   min: 0,     max: 4,   step: 0.05 },
+
+  // ── 4. Edges ──────────────────────────────────────────────────────────
+  { key: 'tipFadePx',    label: 'tip fade px',    min: 0, max: 1000, step: 1 },
+  { key: 'sphereFadePx', label: 'sphere fade px', min: 0, max: 80,   step: 1 },
+
+  // ── 5. Central peak (one tongue raised higher than the others) ───────
+  { key: 'centerPeakAmp',        label: 'peak length ⨉',  min: 1,    max: 5,   step: 0.01 },
+  { key: 'centerPeakWidth',      label: 'peak width rad', min: 0.05, max: 3,   step: 0.01 },
+  { key: 'centerPeakSmoothness', label: 'peak falloff',   min: 0.3,  max: 8,   step: 0.05 },
+  { key: 'centerPeakAngleDeg',   label: 'peak angle °',   min: -180, max: 180, step: 1    },
+
+  // ── 6. Palette animation ──────────────────────────────────────────────
+  { key: 'colorHueShiftSpeed', label: 'hue shift °/s', min: 0, max: 360, step: 1 },
+
+  // ── 7. Swirl (sphere-relative rotation noise) ─────────────────────────
+  { key: 'swirlStrength', label: 'swirl amount', min: 0,     max: 5,    step: 0.001 },
   { key: 'swirlScale',    label: 'swirl scale',  min: 0.001, max: 0.05, step: 0.0001, format: v => v.toFixed(3) },
-  { key: 'swirlSpeed',    label: 'swirl speed',  min: 0,     max: 4,    step: 0.05 },
-  { key: 'swirlStart',    label: 'swirl start',  min: 0,     max: 0.95, step: 0.01 },
+  { key: 'swirlSpeed',    label: 'swirl speed',  min: 0,     max: 4,    step: 0.05  },
+  { key: 'swirlStart',    label: 'swirl start',  min: 0,     max: 0.95, step: 0.01  },
+
+  // ── 8. Curl vortices (localised whirlpool eddies) ────────────────────
+  // Each vortex picks its own strength + radius + distance from these
+  // [min, max] ranges — set min < 0, max > 0 to mix CW and CCW eddies.
+  { key: 'curlCount',        label: 'curl count',        min: 0,    max: 24,   step: 1    },
+  { key: 'curlStrengthMin',  label: 'curl strength min', min: -3,   max: 3,    step: 0.01 },
+  { key: 'curlStrengthMax',  label: 'curl strength max', min: -3,   max: 3,    step: 0.01 },
+  { key: 'curlRadiusMin',    label: 'curl radius min',   min: 10,   max: 400,  step: 1    },
+  { key: 'curlRadiusMax',    label: 'curl radius max',   min: 10,   max: 400,  step: 1    },
+  { key: 'curlDistanceMin',  label: 'curl distance min', min: 0,    max: 1.5,  step: 0.01 },
+  { key: 'curlDistanceMax',  label: 'curl distance max', min: 0,    max: 1.5,  step: 0.01 },
+  { key: 'curlDriftSpeed',   label: 'curl drift',        min: -0.5, max: 0.5,  step: 0.005, format: v => v.toFixed(3) },
+
+  // ── 9. Background grain (post-pass white-noise overlay) ──────────────
+  { key: 'grainOpacity', label: 'grain opacity', min: 0, max: 1,  step: 0.01 },
+  { key: 'grainScale',   label: 'grain scale',   min: 1, max: 6,  step: 1    },
+  { key: 'grainSpeed',   label: 'grain speed',   min: 1, max: 30, step: 1    },
   // ── Glow post-pass ────────────────────────────────────────────────────
   { key: 'glowOpacity',  label: 'glow opacity', min: 0, max: 1,   step: 0.01 },
   { key: 'glowRadius',   label: 'glow radius',  min: 0, max: 80,  step: 1    },
   { key: 'glowSoftness', label: 'glow softness',min: 0, max: 1,   step: 0.01 },
-  // ── Pixelation overlay ─────────────────────────────────────────────────
-  { key: 'pixelSize',    label: 'pixel size',   min: 1, max: 24,  step: 1    },
-  // ── CRT scanlines ──────────────────────────────────────────────────────
-  { key: 'scanlineOpacity', label: 'scanline opacity', min: 0, max: 1,  step: 0.01 },
-  { key: 'scanlineSpacing', label: 'scanline spacing', min: 2, max: 12, step: 1    },
+  // pixelSize, scanlineOpacity, scanlineSpacing — post-render CRT effects,
+  // not part of the simulation.  Removed from the panel; defaults in
+  // FIRE_DEFAULTS keep them disabled (1 / 0 / 2).
 ]
 
 const STORAGE_KEY = 'fire-controls-v2'
@@ -153,7 +199,7 @@ function injectStyles(): void {
   const css = `
     body.theme-light { --page-bg: #f6efe2; }
     body.theme-light #name,
-    body.theme-light #final-name { color: #1a0d04; }
+    body.theme-light #final-name { color: #1a1a1a; }
     body.theme-light #final-soon { color: rgba(26, 13, 4, 0.6); }
 
     #fire-controls {
@@ -163,9 +209,9 @@ function injectStyles(): void {
       z-index: 9999;
       width: 240px;
       font: 11px/1.3 ui-monospace, "SF Mono", Menlo, Consolas, monospace;
-      color: rgba(244, 234, 216, 0.92);
-      background: rgba(10, 6, 8, 0.78);
-      border: 1px solid rgba(255, 140, 40, 0.25);
+      color: rgba(255, 255, 255, 0.85);
+      background: rgba(18, 18, 18, 0.82);
+      border: 1px solid rgba(255, 255, 255, 0.18);
       border-radius: 8px;
       backdrop-filter: blur(8px);
       -webkit-backdrop-filter: blur(8px);
@@ -181,8 +227,8 @@ function injectStyles(): void {
       cursor: pointer;
       letter-spacing: 0.08em;
       text-transform: uppercase;
-      color: rgba(255, 200, 130, 0.95);
-      border-bottom: 1px solid rgba(255, 140, 40, 0.18);
+      color: rgba(255, 255, 255, 0.90);
+      border-bottom: 1px solid rgba(255, 255, 255, 0.12);
     }
     #fire-controls header .chev {
       transition: transform 150ms ease-out;
@@ -205,7 +251,7 @@ function injectStyles(): void {
     #fire-controls .row label { opacity: 0.78; }
     #fire-controls .row .val {
       font-variant-numeric: tabular-nums;
-      color: rgba(255, 200, 130, 0.95);
+      color: rgba(255, 255, 255, 0.90);
       opacity: 0.95;
     }
     #fire-controls .font-row {
@@ -216,30 +262,30 @@ function injectStyles(): void {
       padding: 4px 6px;
       font: inherit;
       color: inherit;
-      background: rgba(255, 140, 40, 0.10);
-      border: 1px solid rgba(255, 140, 40, 0.30);
+      background: rgba(255, 255, 255, 0.06);
+      border: 1px solid rgba(255, 255, 255, 0.20);
       border-radius: 4px;
       cursor: pointer;
       letter-spacing: 0.04em;
       appearance: none;
     }
     #fire-controls .font-row select:hover {
-      background: rgba(255, 140, 40, 0.18);
+      background: rgba(255, 255, 255, 0.12);
     }
     #fire-controls .font-row select option {
-      background: #1a0d04;
-      color: rgba(244, 234, 216, 0.92);
+      background: #1a1a1a;
+      color: rgba(255, 255, 255, 0.85);
     }
     body.theme-light #fire-controls .font-row select {
-      background: rgba(180, 60, 0, 0.08);
-      border-color: rgba(180, 60, 0, 0.30);
+      background: rgba(0, 0, 0, 0.08);
+      border-color: rgba(0, 0, 0, 0.30);
     }
     body.theme-light #fire-controls .font-row select:hover {
-      background: rgba(180, 60, 0, 0.18);
+      background: rgba(0, 0, 0, 0.18);
     }
     body.theme-light #fire-controls .font-row select option {
-      background: #fff8ea;
-      color: rgba(40, 18, 6, 0.92);
+      background: #f5f5f5;
+      color: rgba(0, 0, 0, 0.92);
     }
     #fire-controls input[type="range"] {
       width: 100%;
@@ -251,12 +297,12 @@ function injectStyles(): void {
     }
     #fire-controls input[type="range"]::-webkit-slider-runnable-track {
       height: 2px;
-      background: rgba(255, 140, 40, 0.25);
+      background: rgba(255, 255, 255, 0.18);
       border-radius: 1px;
     }
     #fire-controls input[type="range"]::-moz-range-track {
       height: 2px;
-      background: rgba(255, 140, 40, 0.25);
+      background: rgba(255, 255, 255, 0.18);
       border-radius: 1px;
     }
     #fire-controls input[type="range"]::-webkit-slider-thumb {
@@ -265,8 +311,8 @@ function injectStyles(): void {
       width: 12px;
       height: 12px;
       border-radius: 50%;
-      background: rgb(255, 180, 60);
-      box-shadow: 0 0 6px rgba(255, 140, 40, 0.6);
+      background: rgb(220, 220, 220);
+      box-shadow: 0 0 6px rgba(255, 255, 255, 0.3);
       margin-top: -5px;
       cursor: pointer;
       border: none;
@@ -275,8 +321,8 @@ function injectStyles(): void {
       width: 12px;
       height: 12px;
       border-radius: 50%;
-      background: rgb(255, 180, 60);
-      box-shadow: 0 0 6px rgba(255, 140, 40, 0.6);
+      background: rgb(220, 220, 220);
+      box-shadow: 0 0 6px rgba(255, 255, 255, 0.3);
       cursor: pointer;
       border: none;
     }
@@ -285,25 +331,25 @@ function injectStyles(): void {
       gap: 6px;
       margin-top: 10px;
       padding-top: 8px;
-      border-top: 1px solid rgba(255, 140, 40, 0.18);
+      border-top: 1px solid rgba(255, 255, 255, 0.12);
     }
     #fire-controls button {
       flex: 1;
       padding: 5px 8px;
       font: inherit;
       color: inherit;
-      background: rgba(255, 140, 40, 0.10);
-      border: 1px solid rgba(255, 140, 40, 0.30);
+      background: rgba(255, 255, 255, 0.06);
+      border: 1px solid rgba(255, 255, 255, 0.20);
       border-radius: 4px;
       cursor: pointer;
       letter-spacing: 0.05em;
       text-transform: lowercase;
     }
     #fire-controls button:hover {
-      background: rgba(255, 140, 40, 0.20);
+      background: rgba(255, 255, 255, 0.14);
     }
     #fire-controls button:active {
-      background: rgba(255, 140, 40, 0.30);
+      background: rgba(255, 255, 255, 0.20);
     }
 
     #fire-controls .theme-btn {
@@ -315,15 +361,15 @@ function injectStyles(): void {
       justify-content: center;
       font-size: 12px;
       line-height: 1;
-      background: rgba(255, 140, 40, 0.10);
-      border: 1px solid rgba(255, 140, 40, 0.30);
+      background: rgba(255, 255, 255, 0.06);
+      border: 1px solid rgba(255, 255, 255, 0.20);
       border-radius: 50%;
       color: inherit;
       cursor: pointer;
       letter-spacing: 0;
       text-transform: none;
     }
-    #fire-controls .theme-btn:hover { background: rgba(255, 140, 40, 0.22); }
+    #fire-controls .theme-btn:hover { background: rgba(255, 255, 255, 0.14); }
 
     #fire-controls .colors {
       display: grid;
@@ -331,7 +377,7 @@ function injectStyles(): void {
       gap: 6px;
       margin-top: 10px;
       padding-top: 8px;
-      border-top: 1px solid rgba(255, 140, 40, 0.18);
+      border-top: 1px solid rgba(255, 255, 255, 0.12);
     }
     #fire-controls .colors .swatch {
       display: flex;
@@ -345,7 +391,7 @@ function injectStyles(): void {
       width: 100%;
       height: 28px;
       padding: 0;
-      border: 1px solid rgba(255, 140, 40, 0.28);
+      border: 1px solid rgba(255, 255, 255, 0.18);
       border-radius: 4px;
       background: transparent;
       cursor: pointer;
@@ -355,37 +401,37 @@ function injectStyles(): void {
 
     /* ── Light theme overrides for the panel itself ─────────────────────── */
     body.theme-light #fire-controls {
-      color: rgba(40, 18, 6, 0.92);
-      background: rgba(255, 248, 234, 0.85);
-      border-color: rgba(180, 60, 0, 0.28);
-      box-shadow: 0 6px 24px rgba(80, 30, 0, 0.18);
+      color: rgba(0, 0, 0, 0.92);
+      background: rgba(245, 245, 245, 0.88);
+      border-color: rgba(0, 0, 0, 0.28);
+      box-shadow: 0 6px 24px rgba(0, 0, 0, 0.18);
     }
     body.theme-light #fire-controls header {
-      color: rgba(140, 50, 0, 0.95);
-      border-bottom-color: rgba(180, 60, 0, 0.20);
+      color: rgba(0, 0, 0, 0.95);
+      border-bottom-color: rgba(0, 0, 0, 0.20);
     }
     body.theme-light #fire-controls .actions,
     body.theme-light #fire-controls .colors {
-      border-top-color: rgba(180, 60, 0, 0.20);
+      border-top-color: rgba(0, 0, 0, 0.20);
     }
     body.theme-light #fire-controls input[type="range"]::-webkit-slider-runnable-track,
     body.theme-light #fire-controls input[type="range"]::-moz-range-track {
-      background: rgba(180, 60, 0, 0.28);
+      background: rgba(0, 0, 0, 0.28);
     }
     body.theme-light #fire-controls input[type="range"]::-webkit-slider-thumb,
     body.theme-light #fire-controls input[type="range"]::-moz-range-thumb {
-      background: rgb(200, 80, 0);
-      box-shadow: 0 0 6px rgba(180, 60, 0, 0.4);
+      background: rgb(80, 80, 80);
+      box-shadow: 0 0 6px rgba(0, 0, 0, 0.4);
     }
-    body.theme-light #fire-controls .row .val { color: rgba(180, 70, 0, 0.95); }
+    body.theme-light #fire-controls .row .val { color: rgba(0, 0, 0, 0.95); }
     body.theme-light #fire-controls button,
     body.theme-light #fire-controls .theme-btn {
-      background: rgba(180, 60, 0, 0.08);
-      border-color: rgba(180, 60, 0, 0.30);
+      background: rgba(0, 0, 0, 0.08);
+      border-color: rgba(0, 0, 0, 0.30);
     }
     body.theme-light #fire-controls button:hover,
     body.theme-light #fire-controls .theme-btn:hover {
-      background: rgba(180, 60, 0, 0.18);
+      background: rgba(0, 0, 0, 0.18);
     }
   `
   const style = document.createElement('style')
