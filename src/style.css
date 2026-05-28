@@ -63,6 +63,19 @@ html, body {
   color: #f4ead8;
 }
 
+/* Hide all dev/control UI until the user explicitly reveals it via the
+   "S" key.  Applied as a class on <body> from main.ts at boot. */
+body.ui-hidden #fire-controls,
+body.ui-hidden #cursor-controls,
+body.ui-hidden #post-fx-controls,
+body.ui-hidden #waterfall-controls,
+body.ui-hidden #name-controls,
+body.ui-hidden #scroll-arc,
+body.ui-hidden #section-nav,
+body.ui-hidden #floating-menu {
+  display: none !important;
+}
+
 /* The body is scrollable — main.ts sets `min-height` dynamically based
    on the checkpoint count.  Everything visible (canvas, name) is
    position: fixed so it stays pinned to the viewport while the user

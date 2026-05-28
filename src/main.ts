@@ -8,6 +8,19 @@ for (const [key, value] of Object.entries(defaultSettings)) {
   localStorage.setItem(key, value as string);
 }
 
+// Always start at the top — otherwise a reload mid-page would strand the
+// visitor inside the scroll-lock with no way to advance.
+if ("scrollRestoration" in history) history.scrollRestoration = "manual";
+window.scrollTo(0, 0);
+window.addEventListener("load", () => window.scrollTo(0, 0));
+
+document.body.classList.add("ui-hidden");
+window.addEventListener("keydown", (e: KeyboardEvent) => {
+  if (e.key === "s" || e.key === "S" || e.key === "ы" || e.key === "Ы") {
+    document.body.classList.toggle("ui-hidden");
+  }
+});
+
 import type { FireParams } from "./fire";
 import { createFire } from "./fire";
 import { mountControls } from "./controls";
@@ -292,10 +305,16 @@ const SCROLL_FRICTION = 0.95; // per 60fps-frame
 const WHEEL_SCALE = 0.25;
 let scrollVelocity = 0;
 let inertiaLastT = performance.now();
+let scrollLocked = true;
 
 window.addEventListener(
   "wheel",
   (e: WheelEvent) => {
+    e.preventDefault();
+    if (scrollLocked) {
+      scrollVelocity = 0;
+      return;
+    }
     const delta =
       e.deltaMode === 1
         ? e.deltaY * 16
@@ -303,7 +322,6 @@ window.addEventListener(
           ? e.deltaY * window.innerHeight
           : e.deltaY;
     scrollVelocity += delta * WHEEL_SCALE;
-    e.preventDefault();
   },
   { passive: false },
 );
@@ -314,6 +332,36 @@ window.addEventListener(
     scrollVelocity = 0;
   },
   { passive: true },
+);
+
+window.addEventListener(
+  "touchmove",
+  (e: TouchEvent) => {
+    if (scrollLocked) e.preventDefault();
+  },
+  { passive: false },
+);
+
+window.addEventListener(
+  "keydown",
+  (e: KeyboardEvent) => {
+    if (!scrollLocked) return;
+    const blocked = [
+      "ArrowDown",
+      "ArrowUp",
+      "PageDown",
+      "PageUp",
+      "Home",
+      "End",
+      " ",
+      "Spacebar",
+    ];
+    if (blocked.includes(e.key)) {
+      e.preventDefault();
+      scrollVelocity = 0;
+    }
+  },
+  { passive: false },
 );
 
 function updateInertia(t: number): void {
@@ -423,6 +471,7 @@ function triggerEndingSequence(collected: {
   endDiv.appendChild(marqueeContainer);
 
   document.body.appendChild(endDiv);
+  scrollLocked = false;
 }
 
 function frame(t: number): void {
