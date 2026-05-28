@@ -45,6 +45,8 @@ export interface CursorEffectParams {
   /** Rate (1/sec) at which the field fades in / out as the cursor
    *  enters / leaves the page. */
   fadeSpeed: number
+  /** Amount to weaken the upward push (0..1). 0 = round hole, >0 flattens top. */
+  squint?: number
 }
 
 export const CURSOR_EFFECT_DEFAULTS: CursorEffectParams = {
@@ -119,7 +121,11 @@ export function createCursorEffect(): CursorEffect {
         case 'repel': {
           // (1 - t)² — strongest at the cursor, smoothly decays outward.
           const inv = 1 - lt
-          const s = inv * inv * params.amp * ce
+          let s = inv * inv * params.amp * ce
+          // Weaken the upper part of the repel effect (uy < 0)
+          if (params.squint && uy < 0) {
+            s *= (1 + uy * params.squint) // reduces by up to 'squint' fraction straight up to flatten the top of the hole
+          }
           return [charX + ux * s, charY + uy * s]
         }
         case 'attract': {

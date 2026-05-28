@@ -14,10 +14,7 @@ import {
   CURSOR_EFFECT_TYPES,
 } from './cursor-effects'
 
-type NumericKey = {
-  [K in keyof CursorEffectParams]:
-    CursorEffectParams[K] extends number ? K : never
-}[keyof CursorEffectParams]
+type NumericKey = 'fieldR' | 'amp' | 'noiseAmp' | 'fadeSpeed'
 
 interface SliderDef {
   key: NumericKey
@@ -276,7 +273,7 @@ export function mountCursorEffectControls(
     input.min     = String(def.min)
     input.max     = String(def.max)
     input.step    = String(def.step)
-    const current = cursor.getParams()[def.key]
+    const current = cursor.getParams()[def.key as keyof CursorEffectParams] as number
     input.value   = String(current)
     const fmt     = def.format ?? defaultFormat(def.step)
     val.textContent = fmt(current)
@@ -285,7 +282,7 @@ export function mountCursorEffectControls(
       const v = Number(input.value)
       val.textContent = fmt(v)
       cursor.setParams({ [def.key]: v } as Partial<CursorEffectParams>)
-      persisted.params[def.key] = v
+      persisted.params[def.key as keyof CursorEffectParams] = v as any
       savePersisted(persisted)
     })
 
@@ -306,7 +303,7 @@ export function mountCursorEffectControls(
     savePersisted(persisted)
     effectSelect.value = CURSOR_EFFECT_DEFAULTS.effect
     for (const { def, input, val } of rows) {
-      const v = CURSOR_EFFECT_DEFAULTS[def.key] as number
+      const v = CURSOR_EFFECT_DEFAULTS[def.key as keyof CursorEffectParams] as number
       input.value     = String(v)
       val.textContent = (def.format ?? defaultFormat(def.step))(v)
     }

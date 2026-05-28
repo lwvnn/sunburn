@@ -5,13 +5,15 @@
 // Values persist across reloads in localStorage so you don't lose a tuning
 // session. Collapsible; press the title bar to fold.
 
-import type { Fire, FireParams, SwirlType } from './fire'
-import { FIRE_DEFAULTS, FIRE_DEFAULTS_LIGHT, SWIRL_TYPES } from './fire'
+import type { Fire, FireParams, SwirlType, FlickerMode } from './fire'
+import { FIRE_DEFAULTS, FIRE_DEFAULTS_LIGHT, SWIRL_TYPES, FLICKER_MODES } from './fire'
+import type { ScrollArc, CheckpointParams, KeyframeNumericKey } from './scroll-arc'
+import { isGlobalNumericKey, NUMERIC_KEYS } from './scroll-arc'
 
 type Theme = 'dark' | 'light'
 
 interface ColorDef {
-  key: 'colorBase' | 'colorLow' | 'colorHot' | 'colorTip'
+  key: 'colorBase' | 'colorLow' | 'colorHot' | 'colorTip' | 'wordColorMain' | 'wordColorLeft' | 'wordColorRight'
   label: string
 }
 
@@ -20,6 +22,9 @@ const COLOR_PICKERS: ColorDef[] = [
   { key: 'colorLow', label: 'low' },
   { key: 'colorHot', label: 'hot' },
   { key: 'colorTip', label: 'tip' },
+  { key: 'wordColorLeft', label: 'left eye' },
+  { key: 'wordColorMain', label: 'main eye' },
+  { key: 'wordColorRight', label: 'right eye' },
 ]
 
 /** Curated list of font-family stacks. system-ui is intentionally omitted —
@@ -67,20 +72,28 @@ interface SliderDef {
 
 /*
  * Sliders are grouped by what they SHAPE in the simulation:
- *   1. Typography     — glyph dimensions + stream rate
- *   2. Tongues        — big / wobble noise that drives flame length
- *   3. Flicker        — per-cell intensity noise (palette modulation)
- *   4. Edges          — alpha fade near sphere surface and flame tip
- *   5. Central peak   — single tongue lifted higher than its neighbours
- *   6. Palette        — colour-stop animation
- *   7. Swirl          — global rotation noise displacing chars
- *   8. Curl vortices  — localised whirlpool eddies with randomised values
+ *   1. Sphere & flame — geometry of the eclipse and corona reach
+ *   2. Typography     — glyph dimensions + stream rate
+ *   3. Tongues        — big / wobble noise that drives flame length
+ *   4. Flicker        — per-cell intensity noise (palette modulation)
+ *   5. Edges          — alpha fade near sphere surface and flame tip
+ *   6. Central peak   — single tongue lifted higher than its neighbours
+ *   7. Palette        — colour-stop animation
+ *   8. Swirl          — global rotation noise displacing chars
+ *   9. Curl vortices  — localised whirlpool eddies with randomised values
  *
- * Sphere position / radius / flame reach are NOT here — they're driven by
- * the Scroll Arc keyframes, so exposing them in this panel would clash.
+ * Each slider edit writes into the active scroll-arc checkpoint, so every
+ * row here is per-section.  Globals (font family, swirl type, colour
+ * stops) sit outside the array below.
  */
 const SLIDERS: SliderDef[] = [
-  // ── 1. Typography ─────────────────────────────────────────────────────
+  // ── 1. Sphere & flame geometry ────────────────────────────────────────
+  { key: 'sphereCxFrac',     label: 'sphere x',     min: -0.5, max: 1.5, step: 0.001, format: v => v.toFixed(3) },
+  { key: 'sphereCyFrac',     label: 'sphere y',     min: -5,   max: 5,   step: 0.001, format: v => v.toFixed(3) },
+  { key: 'sphereRadiusFrac', label: 'sphere r',     min: 0,    max: 2,   step: 0.001, format: v => v.toFixed(3) },
+  { key: 'flameRadialReach', label: 'flame reach',  min: 0,    max: 1,   step: 0.001, format: v => v.toFixed(3) },
+
+  // ── 2. Typography ─────────────────────────────────────────────────────
   { key: 'fontSize',       label: 'font size',      min: 6,    max: 40,  step: 1   },
   { key: 'fontWeight',     label: 'font weight',    min: 100,  max: 900, step: 100 },
   { key: 'lineHeight',     label: 'line height',    min: 8,    max: 60,  step: 1   },
@@ -102,6 +115,7 @@ const SLIDERS: SliderDef[] = [
   { key: 'flickerContrast',label: 'flicker curve',   min: 0.3,   max: 3,   step: 0.05 },
   { key: 'flickerSx',      label: 'flicker x scale', min: 0.001, max: 0.2, step: 0.001, format: v => v.toFixed(3) },
   { key: 'flickerSy',      label: 'flicker y scale', min: 0.001, max: 0.2, step: 0.001, format: v => v.toFixed(3) },
+  { key: 'flickerScale',   label: 'flicker scale',   min: 0.1,   max: 5,   step: 0.01, format: v => v.toFixed(2) },
   { key: 'flickerSt',      label: 'flicker speed',   min: 0,     max: 4,   step: 0.05 },
 
   // ── 4. Edges ──────────────────────────────────────────────────────────
@@ -125,27 +139,22 @@ const SLIDERS: SliderDef[] = [
 
   // ── 8. Curl vortices (localised whirlpool eddies) ────────────────────
   // Each vortex picks its own strength + radius + distance from these
-  // [min, max] ranges — set min < 0, max > 0 to mix CW and CCW eddies.
+  // [min, max] ranges — set min < 0, max > 0 to mix repel and attract.
   { key: 'curlCount',        label: 'curl count',        min: 0,    max: 24,   step: 1    },
-  { key: 'curlStrengthMin',  label: 'curl strength min', min: -3,   max: 3,    step: 0.01 },
-  { key: 'curlStrengthMax',  label: 'curl strength max', min: -3,   max: 3,    step: 0.01 },
+  { key: 'curlStrengthMin',  label: 'curl strength min', min: -200, max: 200,  step: 1    },
+  { key: 'curlStrengthMax',  label: 'curl strength max', min: -200, max: 200,  step: 1    },
   { key: 'curlRadiusMin',    label: 'curl radius min',   min: 10,   max: 400,  step: 1    },
   { key: 'curlRadiusMax',    label: 'curl radius max',   min: 10,   max: 400,  step: 1    },
   { key: 'curlDistanceMin',  label: 'curl distance min', min: 0,    max: 1.5,  step: 0.01 },
   { key: 'curlDistanceMax',  label: 'curl distance max', min: 0,    max: 1.5,  step: 0.01 },
   { key: 'curlDriftSpeed',   label: 'curl drift',        min: -0.5, max: 0.5,  step: 0.005, format: v => v.toFixed(3) },
 
-  // ── 9. Background grain (post-pass white-noise overlay) ──────────────
-  { key: 'grainOpacity', label: 'grain opacity', min: 0, max: 1,  step: 0.01 },
-  { key: 'grainScale',   label: 'grain scale',   min: 1, max: 6,  step: 1    },
-  { key: 'grainSpeed',   label: 'grain speed',   min: 1, max: 30, step: 1    },
-  // ── Glow post-pass ────────────────────────────────────────────────────
-  { key: 'glowOpacity',  label: 'glow opacity', min: 0, max: 1,   step: 0.01 },
-  { key: 'glowRadius',   label: 'glow radius',  min: 0, max: 80,  step: 1    },
-  { key: 'glowSoftness', label: 'glow softness',min: 0, max: 1,   step: 0.01 },
-  // pixelSize, scanlineOpacity, scanlineSpacing — post-render CRT effects,
-  // not part of the simulation.  Removed from the panel; defaults in
-  // FIRE_DEFAULTS keep them disabled (1 / 0 / 2).
+  // Non-speed post-FX (grain opacity/scale, glow*, pixelation,
+  // scanlines) have moved to the dedicated post-fx-controls panel —
+  // they're global to the page rather than per-section.  The *_speed
+  // params above are also global at runtime (see GLOBAL_NUMERIC_KEYS
+  // in scroll-arc.ts), but they stay here visually because they belong
+  // to the same conceptual group as the rest of each section.
 ]
 
 const STORAGE_KEY = 'fire-controls-v2'
@@ -156,7 +165,7 @@ interface PersistedState {
   /** Current theme. Persisted across reloads. */
   theme: Theme
   /** Per-theme remembered color choices, so toggling themes restores them. */
-  themeColors: Partial<Record<Theme, Pick<FireParams, 'colorBase' | 'colorLow' | 'colorHot' | 'colorTip'>>>
+  themeColors: Partial<Record<Theme, Pick<FireParams, 'colorBase' | 'colorLow' | 'colorHot' | 'colorTip' | 'wordColorMain' | 'wordColorLeft' | 'wordColorRight'>>>
   /** Per-theme custom page background.  Falls back to the CSS class default
    *  (#0a0608 for dark, #f6efe2 for light) when not set. */
   themeBg: Partial<Record<Theme, string>>
@@ -250,9 +259,28 @@ function injectStyles(): void {
     }
     #fire-controls .row label { opacity: 0.78; }
     #fire-controls .row .val {
+      font: inherit;
       font-variant-numeric: tabular-nums;
       color: rgba(255, 255, 255, 0.90);
       opacity: 0.95;
+      background: transparent;
+      border: 1px solid transparent;
+      border-radius: 2px;
+      padding: 1px 4px;
+      width: 60px;
+      text-align: right;
+      cursor: text;
+      outline: none;
+    }
+    #fire-controls .row .val:hover { border-color: rgba(255, 255, 255, 0.18); }
+    #fire-controls .row .val:focus {
+      border-color: rgba(255, 255, 255, 0.55);
+      background: rgba(255, 255, 255, 0.06);
+    }
+    body.theme-light #fire-controls .row .val:hover { border-color: rgba(0, 0, 0, 0.22); }
+    body.theme-light #fire-controls .row .val:focus {
+      border-color: rgba(0, 0, 0, 0.65);
+      background: rgba(0, 0, 0, 0.06);
     }
     #fire-controls .font-row {
       margin: 0 0 8px;
@@ -454,6 +482,7 @@ export interface ControlsHandle {
 
 export function mountControls(
   fire: Fire,
+  scrollArc: ScrollArc,
   parent: HTMLElement = document.body,
 ): ControlsHandle {
   injectStyles()
@@ -476,6 +505,9 @@ export function mountControls(
             colorLow: FIRE_DEFAULTS.colorLow,
             colorHot: FIRE_DEFAULTS.colorHot,
             colorTip: FIRE_DEFAULTS.colorTip,
+            wordColorMain: FIRE_DEFAULTS.wordColorMain,
+            wordColorLeft: FIRE_DEFAULTS.wordColorLeft,
+            wordColorRight: FIRE_DEFAULTS.wordColorRight,
           })
     fire.setParams(colors)
     // Page background: apply persisted custom value if any, else clear the
@@ -488,13 +520,30 @@ export function mountControls(
     }
   }
 
-  // Apply persisted non-color overrides on top of fire's current params.
+  // Apply persisted overrides on top of fire's current params.  We
+  // restore two slices of state here:
+  //   - non-numeric props (fontFamily, swirlType, sphereEnabled) —
+  //     these have always been global.
+  //   - global NUMERIC props (*_speed family + post-FX) — these are now
+  //     global too, so they persist alongside fonts/colours rather
+  //     than in the scroll-arc.
+  // Per-keyframe numeric props are owned by scroll-arc; we skip them
+  // here to avoid double-writing.  Colour stops are applied by
+  // applyTheme() further below.
   if (Object.keys(persisted.params).length > 0) {
-    // Strip color keys — those are managed per-theme below.
-    const { colorBase: _b, colorLow: _l, colorHot: _h, colorTip: _t, ...rest } =
-      persisted.params
-    void _b; void _l; void _h; void _t
-    if (Object.keys(rest).length > 0) fire.setParams(rest)
+    const toApply: Partial<FireParams> = {}
+    for (const key of Object.keys(persisted.params) as Array<keyof FireParams>) {
+      const v = persisted.params[key]
+      if (v === undefined) continue
+      if (key === 'colorBase' || key === 'colorLow' || key === 'colorHot' || key === 'colorTip' || key === 'wordColorMain' || key === 'wordColorLeft' || key === 'wordColorRight') {
+        continue // applyTheme handles colours
+      }
+      if (typeof v === 'number') {
+        if (!isGlobalNumericKey(key)) continue // per-keyframe, owned by scroll-arc
+      }
+      ;(toApply as Record<string, unknown>)[key] = v
+    }
+    if (Object.keys(toApply).length > 0) fire.setParams(toApply)
   }
   applyTheme(persisted.theme)
 
@@ -585,7 +634,7 @@ export function mountControls(
   const rows: Array<{
     def: SliderDef
     input: HTMLInputElement
-    val: HTMLSpanElement
+    val: HTMLInputElement
   }> = []
 
   for (const def of SLIDERS) {
@@ -596,8 +645,16 @@ export function mountControls(
     labelLine.className = 'label-line'
     const label = document.createElement('label')
     label.textContent = def.label
-    const val = document.createElement('span')
+    // The readout is an editable text input — type any number (including
+    // values outside the slider's min/max) to dial in a precise value.
+    // The slider thumb pins at its bounds when the typed value is out
+    // of range, but the actual stored value is the one you typed.
+    const val = document.createElement('input')
+    val.type = 'text'
+    val.inputMode = 'decimal'
+    val.spellcheck = false
     val.className = 'val'
+    val.title = 'Click and type a number — no min/max cap'
     labelLine.appendChild(label)
     labelLine.appendChild(val)
 
@@ -606,25 +663,97 @@ export function mountControls(
     input.min = String(def.min)
     input.max = String(def.max)
     input.step = String(def.step)
-    const current = fire.getParams()[def.key]
+    // Two routing rules:
+    //   - GLOBAL params (speeds + post-FX) live on the fire instance
+    //     directly and persist in this panel's localStorage.
+    //   - Per-keyframe params live on the active scroll-arc checkpoint;
+    //     fire.getParams() returns the INTERPOLATED render value, but
+    //     we want the discrete checkpoint value for these.
+    const isGlobal = isGlobalNumericKey(def.key)
+    const activeParams = () =>
+      scrollArc.getKeyframes()[scrollArc.getActiveIndex()]?.params
+    const current = isGlobal
+      ? fire.getParams()[def.key]
+      : (activeParams() as CheckpointParams | undefined)?.[def.key as KeyframeNumericKey]
+        ?? FIRE_DEFAULTS[def.key]
     input.value = String(current)
 
     const fmt = def.format ?? defaultFormat(def.step)
-    val.textContent = fmt(current)
+    val.value = fmt(current as number)
+
+    // Single apply path used by both the slider drag and the text input.
+    const applyValue = isGlobal
+      ? (v: number) => {
+          fire.setParams({ [def.key]: v } as Partial<FireParams>)
+          ;(persisted.params as Record<string, unknown>)[def.key] = v
+          savePersisted(persisted)
+        }
+      : (v: number) => {
+          scrollArc.setActiveParam(def.key as KeyframeNumericKey, v)
+        }
 
     input.addEventListener('input', () => {
       const v = Number(input.value)
-      val.textContent = fmt(v)
-      fire.setParams({ [def.key]: v } as Partial<FireParams>)
-      persisted.params[def.key] = v
-      savePersisted(persisted)
+      val.value = fmt(v)
+      applyValue(v)
     })
+
+    // Text input — commit on Enter or blur.  Out-of-range values are
+    // accepted as-is (the slider thumb pins to its closer bound, but
+    // the underlying param value is whatever the user typed).
+    const commitTypedValue = (): void => {
+      const v = Number(val.value)
+      if (!Number.isFinite(v)) {
+        // Bad input — revert the field to whatever the slider shows.
+        val.value = fmt(Number(input.value))
+        return
+      }
+      input.value = String(v) // browser will clamp into [min, max] visually
+      val.value = fmt(v)
+      applyValue(v)
+    }
+    val.addEventListener('change', commitTypedValue)
+    val.addEventListener('keydown', (e) => {
+      if (e.key === 'Enter') {
+        e.preventDefault()
+        val.blur() // triggers the change → commit
+      } else if (e.key === 'Escape') {
+        val.value = fmt(Number(input.value))
+        val.blur()
+      }
+    })
+    // Select-all on focus so a click instantly overwrites — friendlier
+    // than placing a caret at one end of a small number field.
+    val.addEventListener('focus', () => { val.select() })
 
     row.appendChild(labelLine)
     row.appendChild(input)
     body.appendChild(row)
     rows.push({ def, input, val })
   }
+
+  // ── Flicker-mode dropdown ────────────────────────────────────────────────
+  // Global toggle (not per-keyframe) for how the flicker noise is sampled
+  // in sphere mode.  See the FlickerMode docs in fire.ts.
+  const flickerModeRow = document.createElement('div')
+  flickerModeRow.className = 'font-row'
+  const flickerSelect = document.createElement('select')
+  flickerSelect.title = 'Flicker noise sampling mode (sphere mode only)'
+  for (const m of FLICKER_MODES) {
+    const opt = document.createElement('option')
+    opt.value = m
+    opt.textContent = `flicker: ${m}`
+    flickerSelect.appendChild(opt)
+  }
+  flickerSelect.value = fire.getParams().flickerMode
+  flickerSelect.addEventListener('change', () => {
+    const v = flickerSelect.value as FlickerMode
+    fire.setParams({ flickerMode: v })
+    persisted.params.flickerMode = v
+    savePersisted(persisted)
+  })
+  flickerModeRow.appendChild(flickerSelect)
+  body.appendChild(flickerModeRow)
 
   // ── Swirl-type dropdown ──────────────────────────────────────────────────
   // Re-uses the `font-row` styling so the look matches the family selector.
@@ -677,6 +806,9 @@ export function mountControls(
         colorLow: fire.getParams().colorLow,
         colorHot: fire.getParams().colorHot,
         colorTip: fire.getParams().colorTip,
+        wordColorMain: fire.getParams().wordColorMain,
+        wordColorLeft: fire.getParams().wordColorLeft,
+        wordColorRight: fire.getParams().wordColorRight,
       }
       themeColors[def.key] = v
       persisted.themeColors[persisted.theme] = themeColors
@@ -745,52 +877,118 @@ export function mountControls(
   resetBtn.textContent = 'reset'
   resetBtn.title = 'Restore default values'
   resetBtn.addEventListener('click', () => {
-    // Reset all fire params, then re-apply the current theme's color defaults
-    // (so reset doesn't accidentally make the fire invisible against a white bg).
-    fire.setParams({ ...FIRE_DEFAULTS })
+    // Reset non-numeric fire params (fonts, colours, swirl type, theme bg)
+    // here.  Numeric params live in the scroll-arc and are reset from its
+    // own panel ("reset" inside #scroll-arc), since wiping them here would
+    // clobber every checkpoint at once without warning.
+    fire.setParams({
+      fontFamily: FIRE_DEFAULTS.fontFamily,
+      swirlType: FIRE_DEFAULTS.swirlType,
+      sphereEnabled: FIRE_DEFAULTS.sphereEnabled,
+      colorBase: FIRE_DEFAULTS.colorBase,
+      colorLow: FIRE_DEFAULTS.colorLow,
+      colorHot: FIRE_DEFAULTS.colorHot,
+      colorTip: FIRE_DEFAULTS.colorTip,
+      wordColorMain: FIRE_DEFAULTS.wordColorMain,
+      wordColorLeft: FIRE_DEFAULTS.wordColorLeft,
+      wordColorRight: FIRE_DEFAULTS.wordColorRight,
+      glowColor: FIRE_DEFAULTS.glowColor,
+    })
     persisted.params = {}
     persisted.themeColors = {}
     persisted.themeBg = {}
     savePersisted(persisted)
     applyTheme(persisted.theme)
 
-    for (const { def, input, val } of rows) {
-      const v = FIRE_DEFAULTS[def.key]
-      input.value = String(v as number)
-      const fmt = def.format ?? defaultFormat(def.step)
-      val.textContent = fmt(v as number)
-    }
     fontSelect.value = String(FIRE_DEFAULTS.fontFamily)
     swirlSelect.value = FIRE_DEFAULTS.swirlType
     syncColorInputsFromFire()
+    refreshSliders()
   })
+
+  // ── Copy / paste of checkpoint params ────────────────────────────────
+  // `copy` snapshots the ACTIVE checkpoint's per-keyframe params (no
+  // globals — those live elsewhere) into an in-memory buffer.  `paste`
+  // applies that buffer to whichever checkpoint is currently active.
+  // Together they let you propagate one section's look to others
+  // without manually re-dragging every slider.
+  let copyBuffer: CheckpointParams | null = null
 
   const copyBtn = document.createElement('button')
   copyBtn.textContent = 'copy'
-  copyBtn.title = 'Copy current params as JSON'
-  copyBtn.addEventListener('click', async () => {
-    const json = JSON.stringify(fire.getParams(), null, 2)
-    try {
-      await navigator.clipboard.writeText(json)
-      const orig = copyBtn.textContent
-      copyBtn.textContent = 'copied'
-      setTimeout(() => {
-        copyBtn.textContent = orig
-      }, 900)
-    } catch {
-      console.log(json)
-    }
+  copyBtn.title = 'Snapshot current section params (excluding globals) into a buffer'
+
+  const pasteBtn = document.createElement('button')
+  pasteBtn.textContent = 'paste'
+  pasteBtn.title = 'Apply the buffered params to the current section'
+  pasteBtn.disabled = true
+
+  copyBtn.addEventListener('click', () => {
+    const kf = scrollArc.getKeyframes()[scrollArc.getActiveIndex()]
+    if (!kf) return
+    // Clone and restrict to the canonical keyframe keys — defensive in
+    // case stale fields are present.
+    const buf = {} as CheckpointParams
+    for (const k of NUMERIC_KEYS) buf[k] = kf.params[k]
+    copyBuffer = buf
+    pasteBtn.disabled = false
+    const orig = copyBtn.textContent
+    copyBtn.textContent = 'copied'
+    setTimeout(() => { copyBtn.textContent = orig }, 900)
+  })
+
+  pasteBtn.addEventListener('click', () => {
+    if (!copyBuffer) return
+    scrollArc.setActiveParams(copyBuffer)
+    refreshSliders()
+    const orig = pasteBtn.textContent
+    pasteBtn.textContent = 'pasted'
+    setTimeout(() => { pasteBtn.textContent = orig }, 900)
   })
 
   actions.appendChild(resetBtn)
   actions.appendChild(copyBtn)
+  actions.appendChild(pasteBtn)
   body.appendChild(actions)
 
   panel.appendChild(body)
   parent.appendChild(panel)
 
+  // Keep slider DOM in sync with the currently-active checkpoint.  Triggers
+  // on scroll (main.ts updates activeIndex as the user moves between
+  // sections) and on arrow clicks (section-nav).  Guard with a flag so the
+  // sync doesn't fire mid-drag and yank the thumb out from under the user.
+  let suppressSync = false
+  for (const { input } of rows) {
+    input.addEventListener('pointerdown', () => { suppressSync = true })
+    const release = () => { suppressSync = false; refreshSliders() }
+    input.addEventListener('pointerup', release)
+    input.addEventListener('pointercancel', release)
+  }
+  function refreshSliders(): void {
+    if (suppressSync) return
+    const kf = scrollArc.getKeyframes()[scrollArc.getActiveIndex()]
+    if (!kf) return
+    for (const { def, input, val } of rows) {
+      // Globals don't change with the active checkpoint — they're owned
+      // by the fire instance + this panel's localStorage, so leave
+      // their slider DOM alone.
+      if (isGlobalNumericKey(def.key)) continue
+      // Don't yank the text input out from under the user mid-edit.
+      if (document.activeElement === val) continue
+      const v = kf.params[def.key as KeyframeNumericKey]
+      if (typeof v !== 'number') continue
+      if (Number(input.value) !== v) input.value = String(v)
+      const fmt = def.format ?? defaultFormat(def.step)
+      val.value = fmt(v)
+    }
+  }
+  const unsubscribe = scrollArc.subscribe(refreshSliders)
+  refreshSliders()
+
   return {
     destroy() {
+      unsubscribe()
       panel.remove()
     },
   }
