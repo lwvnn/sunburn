@@ -369,7 +369,6 @@ function triggerEndingSequence(collected: {
   endDiv.appendChild(col);
 
   // Create marquee container
-  const params = fire.getParams();
   const marqueeContainer = document.createElement("div");
   marqueeContainer.className = "marquee-container";
 
