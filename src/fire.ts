@@ -25,6 +25,78 @@ import { createNoise2D } from 'simplex-noise'
 import type { CursorEffect } from './cursor-effects'
 import quotesCaps from './corpus/quotes_caps.json'
 
+const COLORED_WORDS_COUNT = 15
+const createWordSet = () => {
+  const set = new Set<number>()
+  while (set.size < Math.min(COLORED_WORDS_COUNT, quotesCaps.length)) {
+    set.add(Math.floor(Math.random() * quotesCaps.length))
+  }
+  return set
+}
+const mainColoredWords = createWordSet()
+const leftColoredWords = createWordSet()
+const rightColoredWords = createWordSet()
+
+const createEyeWordList = (coloredSet: Set<number>) => {
+  const list = Array.from(coloredSet);
+  let extra = 45; // Add 45 regular words to mix (ratio 1:3, so roughly every 4th word is colored)
+  while(extra > 0) {
+      const r = Math.floor(Math.random() * quotesCaps.length);
+      if (!coloredSet.has(r)) {
+          list.push(r);
+          extra--;
+      }
+  }
+  return list.sort(() => Math.random() - 0.5);
+}
+
+const mainEyeWords = createEyeWordList(mainColoredWords);
+const leftEyeWords = createEyeWordList(leftColoredWords);
+const rightEyeWords = createEyeWordList(rightColoredWords);
+
+const leftEyeModules = import.meta.glob('./images/left/*.{svg,png,jpg,jpeg,webp}', { eager: true, as: 'url' });
+const rightEyeModules = import.meta.glob('./images/right/*.{svg,png,jpg,jpeg,webp}', { eager: true, as: 'url' });
+
+const LEFT_EYE_IMAGE_URLS = Object.values(leftEyeModules) as string[];
+const RIGHT_EYE_IMAGE_URLS = Object.values(rightEyeModules) as string[];
+
+let leftEyeImagesData: ImageData[] = [];
+let rightEyeImagesData: ImageData[] = [];
+let eyeImagesLoaded = false;
+
+function loadEyeImages() {
+  if (eyeImagesLoaded || typeof document === 'undefined') return;
+  eyeImagesLoaded = true;
+
+  const loadTo = (urls: string[], targetArray: ImageData[], label: string) => {
+    urls.forEach(url => {
+      const img = new Image();
+      img.onload = () => {
+        console.log(`Successfully loaded image for ${label} eye:`, url);
+        const cvs = document.createElement('canvas');
+        cvs.width = 400;
+        cvs.height = 400;
+        const ctx = cvs.getContext('2d', { willReadFrequently: true });
+        if (ctx) {
+          ctx.drawImage(img, 0, 0, 400, 400);
+          targetArray.push(ctx.getImageData(0, 0, 400, 400));
+        }
+      };
+      img.onerror = (err) => {
+        console.error(`Failed to load image for ${label} eye:`, url, err);
+      };
+      img.src = url;
+    });
+  };
+
+  loadTo(LEFT_EYE_IMAGE_URLS, leftEyeImagesData, 'left');
+  loadTo(RIGHT_EYE_IMAGE_URLS, rightEyeImagesData, 'right');
+}
+
+if (typeof window !== 'undefined') {
+  loadEyeImages();
+}
+
 // ─── Live-tunable params ───────────────────────────────────────────────────
 
 export interface FireParams {
@@ -56,6 +128,25 @@ export interface FireParams {
   flickerSx: number
   flickerSy: number
   flickerSt: number
+  /** Master scale multiplier for flickerSx AND flickerSy.  Lets you blend
+   *  the overall noise size between scroll-arc checkpoints without
+   *  rotating the pattern — keeping the Sx/Sy ratio fixed and only
+   *  varying flickerScale preserves the noise's aspect, so polar-mapped
+   *  noise (sphere mode) doesn't swirl while interpolating. */
+  flickerScale: number
+  /** How the flicker noise is sampled in sphere mode:
+   *    cartesian — nFlick((x - cx) * Sx, (y - cy) * Sy + phase).
+   *                Pattern follows the canvas: zooms uniformly under
+   *                scale changes, no angular drift while blending.
+   *                Looks like wandering pixel-grid speckle.
+   *    polar     — nFlick(angle * Sx * K, radius * Sy − phase).
+   *                Pattern follows the corona: features radiate from
+   *                the sphere centre into wedges/rings.  Visually
+   *                richer but the angular phase shifts when Sx
+   *                changes, so scale blends induce a slight rotation.
+   *  Ignored when sphere mode is off — legacy band mode is always
+   *  Cartesian along the screen axes. */
+  flickerMode: FlickerMode
   /** Constant added to the flicker signal AFTER curve, BEFORE amplitude.
    *  Negative biases the corona toward dimmer cells, positive toward
    *  brighter — shifts the "average colour" of the texture. */
@@ -115,6 +206,12 @@ export interface FireParams {
   colorHot: string
   /** Tip / hottest core at the top of intensity. */
   colorTip: string
+  /** Color for words appearing in the main eye */
+  wordColorMain: string
+  /** Color for words appearing in the left eye */
+  wordColorLeft: string
+  /** Color for words appearing in the right eye */
+  wordColorRight: string
   /** Degrees per second to rotate the hue of low / hot / tip stops.
    *  0 = static palette.  colorBase is held fixed so the dark anchor of
    *  the gradient doesn't drift. */
@@ -160,21 +257,21 @@ export interface FireParams {
   swirlStart: number
   /** Which noise-field flavour drives the swirl. */
   swirlType: SwirlType
-  // ── Curl vortices (localised circular eddies in the corona) ─────────────
-  // A small number of vortex centres sit around the sphere at mid-corona
-  // radius and slowly drift over time.  Each vortex rotates nearby chars
-  // around ITS centre (not the sphere centre), creating local whirlpools —
-  // some flame tongues curl while neighbours stay straight.  Falloff is
-  // a gaussian so the effect blends smoothly into the rest of the corona.
+  // ── Curl repel points (localised repulsion zones in the corona) ─────────
+  // A small number of repel centres sit around the sphere at mid-corona
+  // radius and slowly drift over time.  Each one pushes nearby chars
+  // radially OUTWARD from ITS centre, creating local "blown out" spots —
+  // some flame regions bulge outward while neighbours stay calm.  Falloff
+  // is a gaussian so the effect blends smoothly into the rest of the
+  // corona.  Negative strengths attract instead of repel.
   //
   // Per-vortex strength and radius are RANDOMISED within the [min, max]
   // ranges you set — each vortex picks a deterministic value seeded by
   // its index, so the pattern is stable frame-to-frame but each vortex
-  // has its own character (e.g. setting strengthMin = −3, strengthMax = 3
-  // gives a mix of CW and CCW eddies of varying intensity).
-  /** Min per-vortex rotation in radians.  Set both min/max to 0 to disable. */
+  // has its own character.
+  /** Min per-vortex push amplitude in CSS px.  Set both min/max to 0 to disable. */
   curlStrengthMin: number
-  /** Max per-vortex rotation in radians. */
+  /** Max per-vortex push amplitude in CSS px.  Negative = attract. */
   curlStrengthMax: number
   /** Number of vortices evenly distributed around the sphere — your
    *  "frequency" control: more vortices = curls appear more often. */
@@ -217,6 +314,11 @@ export interface FireParams {
  *  pulse      — sin(t · speed · 2π).  Pure time-driven oscillation;
  *               every character swings the same direction at once.
  */
+/** Flicker noise sampling modes — see `FireParams.flickerMode`. */
+export type FlickerMode = 'cartesian' | 'polar'
+
+export const FLICKER_MODES: readonly FlickerMode[] = ['cartesian', 'polar']
+
 export type SwirlType =
   | 'simplex'
   | 'turbulence'
@@ -251,6 +353,8 @@ export const FIRE_DEFAULTS: FireParams = {
   flickerSx: 0.069,
   flickerSy: 0.001,
   flickerSt: 0.85,
+  flickerScale: 1,
+  flickerMode: 'cartesian',
   flickerBias: 0.5,
   flickerContrast: 1.25,
   tipFadePx: 0,
@@ -260,16 +364,19 @@ export const FIRE_DEFAULTS: FireParams = {
   sphereRadiusFrac: 1.09,
   flameRadialReach: 0.53,
   centerPeakAmp: 1,
-  centerPeakWidth: 0.5,
-  centerPeakSmoothness: 2,
+  centerPeakWidth: 0.28,
+  centerPeakSmoothness: 1.0,
   centerPeakAngleDeg: -90,
-  sphereFadePx: 0,
-  colorBase: '#000000',
-  colorLow: '#000000',
-  colorHot: '#ffffff',
-  colorTip: '#ffffff',
-  colorHueShiftSpeed: 125,
-  glowOpacity: 0,
+  sphereFadePx: 25,
+  colorBase: '#0a0000',
+  colorLow: '#a10800',
+  colorHot: '#f28300',
+  colorTip: '#ffed7a',
+  wordColorMain: '#a80000',
+  wordColorLeft: '#0000ff',
+  wordColorRight: '#ffaa00',
+  colorHueShiftSpeed: 0,
+  glowOpacity: 0.35,
   glowRadius: 17,
   glowSoftness: 0.27,
   glowColor: '#ff8800',
@@ -298,12 +405,15 @@ export const FIRE_DEFAULTS: FireParams = {
 /** Default colors tuned for a light (white-ish) background — deeper and more saturated. */
 export const FIRE_DEFAULTS_LIGHT: Pick<
   FireParams,
-  'colorBase' | 'colorLow' | 'colorHot' | 'colorTip'
+  'colorBase' | 'colorLow' | 'colorHot' | 'colorTip' | 'wordColorMain' | 'wordColorLeft' | 'wordColorRight'
 > = {
   colorBase: '#1c0000',
   colorLow: '#7a1100',
   colorHot: '#cc4d00',
   colorTip: '#e8a000',
+  wordColorMain: '#a80000',
+  wordColorLeft: '#0000ff',
+  wordColorRight: '#ffaa00',
 }
 
 // ─── Types ──────────────────────────────────────────────────────────────────
@@ -368,7 +478,8 @@ export interface Fire {
    * left, and right of the sphere, with an explicit strength parameter.
    */
   /** Permanently anchor three repels (main, left, right) and explicitly control their strength. */
-  setCenterRepels(main: CursorEffect | null, left: CursorEffect | null, right: CursorEffect | null, strength: number, lookStrength?: number): void
+  setCenterRepels(main: CursorEffect | null, left: CursorEffect | null, right: CursorEffect | null, strength: number, lookStrength?: number, leftStrength?: number, rightStrength?: number): void
+  getCollectedWords(): { main: string[]; left: string[]; right: string[] }
   /**
    * Read the live `colorTip` palette stop with the current hue rotation
    * applied (same math the glow post-pass uses), returned as an
@@ -377,6 +488,7 @@ export interface Fire {
    * current frame.
    */
   getCurrentTipColor(timeMs: number): string
+  isInProgressEyeHovered(): boolean
 }
 
 // ─── Cursor interaction tunables ────────────────────────────────────────────
@@ -433,8 +545,8 @@ export function createFire(
   // size, weight or letterSpacing all require re-preparing the text — Pretext
   // measures every segment with the actual font, so its segment widths are
   // baked-in.
-  function fontShorthand(): string {
-    return `${params.fontWeight} ${params.fontSize}px ${params.fontFamily}`
+  function fontShorthand(scale: number = 1.0): string {
+    return `${params.fontWeight} ${params.fontSize * scale}px ${params.fontFamily}`
   }
 
   let prepared = prepareWithSegments(text, fontShorthand(), {
@@ -482,10 +594,41 @@ export function createFire(
   let scrollAccum = 0
   let prevTimeMs = 0
 
+  // Phase accumulators for every speed-driven parameter.  These integrate
+  // `dt × smoothed_speed` each frame so motion stays continuous through
+  // scroll-arc checkpoint blends.  See `smTongueBigSt` etc. below for the
+  // damped-speed values that feed in here — they prevent the noise
+  // pattern from "blasting" forward when the user transitions between
+  // two checkpoints with very different speed settings.
+  let phaseTongueBig = 0
+  let phaseTongueMed = 0
+  let phaseFlicker = 0
+  let phaseSwirl = 0
+  let phaseCurlDrift = 0
+  let phaseHue = 0  // degrees, modded into [0, 360) at read sites
+
+  // Low-pass-filtered copies of every *_speed param.  Each frame they
+  // chase the live param value with a ~1.5-second time constant; phase
+  // advances by the smoothed rate, not the raw one.  Result: speed
+  // changes between checkpoints take a couple of seconds to fully
+  // apply — a "slow and steady blend" instead of an instant jump that
+  // would visibly blast the noise pattern forward.
+  let smTongueBigSt   = params.tongueBigSt
+  let smTongueMedSt   = params.tongueMedSt
+  let smFlickerSt     = params.flickerSt
+  let smRadialReachBoost = 0
+  let smSwirlSpeed    = params.swirlSpeed
+  let smCurlDriftSpeed = params.curlDriftSpeed
+  let smHueShiftSpeed  = params.colorHueShiftSpeed
+
   // ── Cursor state ──────────────────────────────────────────────────────────
   let cursorX = 0
   let cursorY = 0
   let cursorActive = false
+  let inProgressEyeHovered = false
+  let activeWordIndex = -1
+  let activeWordEndTime = 0
+  let activeWordEyeIndex = -1
   /**
    * Raw linear interpolant that chases 0 (inactive) or 1 (active).
    * A smoothstep is applied before use to get ease-in / ease-out.
@@ -496,7 +639,23 @@ export function createFire(
   let leftRepelEffect: CursorEffect | null = null
   let rightRepelEffect: CursorEffect | null = null
   let centerRepelStrength = 0
+  let leftRepelStrength = 0
+  let rightRepelStrength = 0
   let pupilLookStrength = 1
+
+  let mainEyeActual = 1;
+  let mainEyeVelocity = 0;
+
+  const collectedWords = {
+    main: new Set<string>(),
+    left: new Set<string>(),
+    right: new Set<string>(),
+  }
+  const collectedWordsList = {
+    main: [] as string[],
+    left: [] as string[],
+    right: [] as string[],
+  }
 
   let mainPupilChar = 'O'
   let leftPupilChar = 'O'
@@ -608,6 +767,7 @@ export function createFire(
 
   return {
     draw(ctx, timeMs) {
+      inProgressEyeHovered = false
       mainPupilMinDist = Infinity
       leftPupilMinDist = Infinity
       rightPupilMinDist = Infinity
@@ -627,14 +787,60 @@ export function createFire(
       const R_s  = sphereOn ? minDim * params.sphereRadiusFrac : 0
       const R2_s = R_s * R_s
 
-      const maxFlameR = sphereOn ? minDim * params.flameRadialReach : 0
+      // ── Time delta ───────────────────────────────────────────────────────
+      const dt = prevTimeMs > 0 ? Math.min(0.1, (timeMs - prevTimeMs) / 1000) : 0
+      prevTimeMs = timeMs
+
+      const SPEED_SMOOTH_TAU = 1.5  // seconds — heavier = slower blends
+      const sk = 1 - Math.exp(-dt / SPEED_SMOOTH_TAU)
+
+      let inProgressIdx = -1
+      if (collectedWordsList.main.length < 5) inProgressIdx = 0
+      else if (collectedWordsList.left.length < 5) inProgressIdx = 1
+      else if (collectedWordsList.right.length < 5) inProgressIdx = 2
+
+      let isHoveringInProgressNow = false
+      if (cursorActive && inProgressIdx !== -1) {
+        let px = cx_s
+        let py = h * 0.8
+        if (inProgressIdx === 1) {
+          px = cx_s - w * 0.15
+          py = h * 0.85
+        } else if (inProgressIdx === 2) {
+          px = cx_s + w * 0.15
+          py = h * 0.85
+        }
+        isHoveringInProgressNow = Math.hypot(cursorX - px, cursorY - py) < 60
+      }
+
+      const isLeftEyeHovered = cursorActive && Math.hypot(cursorX - (cx_s - w * 0.15), cursorY - (h * 0.85)) < 60;
+      const isRightEyeHovered = cursorActive && Math.hypot(cursorX - (cx_s + w * 0.15), cursorY - (h * 0.85)) < 60;
       
+      // Flicker speed ramps up and down at the same fast speed as radial reach
+      const flickerTau = isHoveringInProgressNow ? 0.3 : 0.5
+      const skFlicker = 1 - Math.exp(-dt / flickerTau)
+
+      // Radial reach expands faster (0.3s) than the flicker speeds up
+      const radialTau = isHoveringInProgressNow ? 0.3 : 0.5
+      const skRadial = 1 - Math.exp(-dt / radialTau)
+
+      const targetRadialReachBoost = isHoveringInProgressNow ? 1 : 0
+      smRadialReachBoost += (targetRadialReachBoost - smRadialReachBoost) * skRadial
+
+      const maxFlameR = sphereOn ? minDim * (params.flameRadialReach + smRadialReachBoost) : 0
+
       const getRepelFade = (rx: number, ry: number) => {
         if (!sphereOn) return 1
         const dist = Math.hypot(rx - cx_s, ry - cy_s)
         return Math.max(0, Math.min(1, (dist - R_s) / 40 + 0.5))
       }
-      const fadeMain = getRepelFade(cx_s, h * 0.8)
+
+      const targetMainOpen = (isLeftEyeHovered || isRightEyeHovered) ? 0 : 1;
+      mainEyeVelocity += (targetMainOpen - mainEyeActual) * 0.1;
+      mainEyeVelocity *= 0.8;
+      mainEyeActual += mainEyeVelocity;
+
+      const fadeMain = getRepelFade(cx_s, h * 0.8) * Math.max(0, mainEyeActual);
       const fadeLeft = getRepelFade(cx_s - w * 0.15, h * 0.85)
       const fadeRight = getRepelFade(cx_s + w * 0.15, h * 0.85)
 
@@ -645,25 +851,37 @@ export function createFire(
       const bandH = fireBottom - fireTop
       if (bandH <= 0) return
 
-      const t = timeMs * 0.001
+      // First, low-pass each speed param toward its live value
+      smTongueBigSt    += (params.tongueBigSt        - smTongueBigSt)    * sk
+      smTongueMedSt    += (params.tongueMedSt        - smTongueMedSt)    * sk
+      
+      const targetFlickerSt = params.flickerSt + (isHoveringInProgressNow ? 3 : 0)
+      smFlickerSt      += (targetFlickerSt           - smFlickerSt)      * skFlicker
+      smSwirlSpeed     += (params.swirlSpeed         - smSwirlSpeed)     * sk
+      smCurlDriftSpeed += (params.curlDriftSpeed     - smCurlDriftSpeed) * sk
+      smHueShiftSpeed  += (params.colorHueShiftSpeed - smHueShiftSpeed)  * sk
+
+      // Integrate phase using the SMOOTHED speeds — never the raw param.
+      phaseTongueBig += dt * smTongueBigSt
+      phaseTongueMed += dt * smTongueMedSt
+      phaseFlicker   += dt * smFlickerSt
+      phaseSwirl     += dt * smSwirlSpeed
+      phaseCurlDrift += dt * smCurlDriftSpeed
+      phaseHue       += dt * smHueShiftSpeed
+      // Keep hue in [0, 360) so the modulo at read time stays cheap and
+      // the accumulator can't drift to a float-precision danger zone over
+      // long sessions.
+      if (phaseHue >= 360) phaseHue -= 360 * Math.floor(phaseHue / 360)
+      else if (phaseHue < 0) phaseHue += 360 * Math.ceil(-phaseHue / 360)
 
       // ── Hue rotation ─────────────────────────────────────────────────────
-      // When colorHueShiftSpeed > 0, rebuild the palette LUT each frame
-      // with a time-driven hue offset.  Only the low/hot/tip stops rotate;
-      // base stays anchored.  72 stop rebuild is ~µs-scale.
-      // `hueDeg` is hoisted so the glow post-pass below can read the same
-      // offset — the glow tint follows the live (shifted) tip colour.
-      const hueDeg =
-        params.colorHueShiftSpeed > 0
-          ? (t * params.colorHueShiftSpeed) % 360
-          : 0
+      // Rebuild the palette LUT each frame with the integrated hue offset.
+      // Only the low/hot/tip stops rotate; base stays anchored.  72 stop
+      // rebuild is ~µs-scale.
+      const hueDeg = phaseHue
       if (params.colorHueShiftSpeed > 0) {
         palette = buildPaletteWithHueShift(hueDeg)
       }
-
-      // ── Time-based scroll: advance scrollCursor by ~one line every tick ──
-      const dt = prevTimeMs > 0 ? Math.min(0.1, (timeMs - prevTimeMs) / 1000) : 0
-      prevTimeMs = timeMs
 
       // ── Cursor strength — smooth ease-in / ease-out ───────────────────────
       // Lerp the raw value toward 0 or 1, then apply a smoothstep so the
@@ -736,11 +954,11 @@ export function createFire(
           let frac =
             params.tongueBase +
             params.tongueBigAmp *
-              nBig(ax * sxBig, ay * sxBig + t * params.tongueBigSt) +
+              nBig(ax * sxBig, ay * sxBig + phaseTongueBig) +
             params.tongueMedAmp *
               nMed(
                 ax * sxMed + 13.7,
-                ay * sxMed + 4.1 + t * params.tongueMedSt,
+                ay * sxMed + 4.1 + phaseTongueMed,
               )
           if (frac < 0) frac = 0
           else if (frac > 1) frac = 1
@@ -784,7 +1002,7 @@ export function createFire(
             curlCenters = new Float32Array(need * 4)
           }
           numCurls = need
-          const drift = t * params.curlDriftSpeed
+          const drift = phaseCurlDrift
           const sMin = params.curlStrengthMin
           const sMax = params.curlStrengthMax
           const rMin = params.curlRadiusMin
@@ -819,11 +1037,11 @@ export function createFire(
           let flameFrac =
             params.tongueBase +
             params.tongueBigAmp *
-              nBig(x * params.tongueBigSx, t * params.tongueBigSt) +
+              nBig(x * params.tongueBigSx, phaseTongueBig) +
             params.tongueMedAmp *
               nMed(
                 x * params.tongueMedSx + 13.7,
-                t * params.tongueMedSt + 4.1,
+                phaseTongueMed + 4.1,
               )
 
           if (cursorOn) {
@@ -875,7 +1093,79 @@ export function createFire(
         for (let i = 0; i <= numSamples; i++) {
           const x = i < numSamples ? i * FLAME_SAMPLE_STEP : w + 1
           let inside: boolean
-          if (sphereOn) {
+          if (isLeftEyeHovered) {
+            const size = Math.min(w, h) * 0.3; 
+            const shapeIndex = Math.floor(timeMs / 200) % 7;
+            const ddx = x - cx_s;
+            const centerY = h / 2;
+            const ddyCenter = screenY - centerY;
+            
+            if (shapeIndex === 0) {
+                // Inverted pyramid / triangle
+                inside = ddyCenter >= -size && ddyCenter <= size && Math.abs(ddx) <= size * (1 - (ddyCenter + size) / (2 * size));
+            } else if (shapeIndex === 1) {
+                // Ring
+                const dist = Math.sqrt(ddx*ddx + ddyCenter*ddyCenter);
+                inside = dist >= size * 0.85 && dist <= size;
+            } else if (shapeIndex === 2) {
+                // Circle
+                const dist = Math.sqrt(ddx*ddx + ddyCenter*ddyCenter);
+                inside = dist <= size;
+            } else if (shapeIndex === 3) {
+                // X mark
+                const thickness = size * 0.2; // 0.15 * sqrt(2) approx
+                inside = Math.abs(ddx) <= size && Math.abs(ddyCenter) <= size && 
+                         Math.abs(Math.abs(ddx) - Math.abs(ddyCenter)) <= thickness;
+            } else if (shapeIndex === 4) {
+                // Three vertical stripes
+                inside = Math.abs(ddyCenter) <= size && (
+                         Math.abs(ddx) <= size * 0.15 || 
+                         Math.abs(ddx - size * 0.6) <= size * 0.15 || 
+                         Math.abs(ddx + size * 0.6) <= size * 0.15);
+            } else if (shapeIndex === 5) {
+                // Outline square
+                const maxDist = Math.max(Math.abs(ddx), Math.abs(ddyCenter));
+                inside = maxDist >= size * 0.85 && maxDist <= size;
+            } else {
+                // I-Ching hexagram (Hexagram 64: alternating broken/solid)
+                const yNorm = (ddyCenter + size) / (2 * size);
+                const unit = 1 / 17;
+                let inHexLine = false;
+                const hexLines = [false, true, false, true, false, true]; // top to bottom
+                for (let i = 0; i < 6; i++) {
+                    const lineTop = i * 3 * unit;
+                    const lineBottom = lineTop + 2 * unit;
+                    if (yNorm >= lineTop && yNorm <= lineBottom) {
+                        if (hexLines[i]) {
+                            inHexLine = Math.abs(ddx) <= size; // solid
+                        } else {
+                            inHexLine = Math.abs(ddx) <= size && Math.abs(ddx) > size * 0.15; // broken
+                        }
+                        break;
+                    }
+                }
+                inside = inHexLine;
+            }
+            if (inside && x >= w) inside = false;
+          } else if (isRightEyeHovered && rightEyeImagesData.length > 0) {
+            const size = Math.min(w, h) * 0.55;
+            const ddx = x - cx_s;
+            const centerY = h / 2;
+            const ddyCenter = screenY - centerY;
+            if (Math.abs(ddx) <= size && Math.abs(ddyCenter) <= size) {
+                const u = (ddx + size) / (2 * size);
+                const v = (ddyCenter + size) / (2 * size);
+                const imgIndex = Math.floor(timeMs / 200) % rightEyeImagesData.length;
+                const imgData = rightEyeImagesData[imgIndex];
+                const px = Math.floor(u * imgData.width);
+                const py = Math.floor(v * imgData.height);
+                const idx = (py * imgData.width + px) * 4 + 3;
+                inside = imgData.data[idx] > 128;
+            } else {
+                inside = false;
+            }
+            if (inside && x >= w) inside = false;
+          } else if (sphereOn) {
             // Inside the annular flame zone around the sphere.
             const ddx = x - cx_s
             const ddy = screenY - cy_s
@@ -961,7 +1251,10 @@ export function createFire(
                   // mode it's the same vertical mapping along each tongue.
                   let localHot: number
                   let tipFade: number
-                  if (sphereOn) {
+                  if (isLeftEyeHovered || isRightEyeHovered) {
+                    localHot = 0.5;
+                    tipFade = 1.0;
+                  } else if (sphereOn) {
                     const ddx = charX - cx_s
                     const ddy = screenY - cy_s
                     const dd = Math.sqrt(ddx * ddx + ddy * ddy)
@@ -1010,31 +1303,53 @@ export function createFire(
                   // In legacy band mode we keep the original bottom→top
                   // scroll (time added to Y).
                   let flickerRaw: number
-                  if (sphereOn) {
+                  // Master scaler multiplies both Sx and Sy so the noise
+                  // aspect ratio stays fixed when only the overall size
+                  // blends between checkpoints.
+                  const fScale = params.flickerScale
+                  const flickerSxE = params.flickerSx * fScale
+                  const flickerSyE = params.flickerSy * fScale
+                  if (sphereOn && params.flickerMode === 'polar') {
+                    // POLAR — sample noise at (angle × Sx · K, radius × Sy).
+                    // Gives the noise a radial / wedge character that
+                    // hugs the corona's geometry.  The angular phase
+                    // shifts under scale changes, so blending Sx /
+                    // flickerScale induces a slight rotation — use the
+                    // cartesian mode if that bothers you.
                     const fdx = charX - cx_s
                     const fdy = screenY - cy_s
                     const fdd = Math.sqrt(fdx * fdx + fdy * fdy)
                     const fang = Math.atan2(fdy, fdx)
-                    const angScale = params.flickerSx * 200
-                    const radCoord = fdd * params.flickerSy - t * params.flickerSt
+                    const angScale = flickerSxE * 200
+                    const radCoord = fdd * flickerSyE - phaseFlicker
                     const s1 = nFlick(fang * angScale, radCoord)
-                    // Seam blend: also sample the wrapped angle and fade
-                    // between them near ±π so there's no visible jump.
+                    // Hide the ±π wrap with a smoothstep blend across a
+                    // narrow seam zone.
                     const seamDist = Math.PI - Math.abs(fang)
                     const SEAM_W = 0.6 // radians
                     if (seamDist < SEAM_W) {
                       const fang2 = fang > 0 ? fang - TWO_PI : fang + TWO_PI
                       const s2 = nFlick(fang2 * angScale, radCoord)
                       const x = 1 - seamDist / SEAM_W
-                      const b = x * x * (3 - 2 * x) * 0.5 // smoothstep × 0.5
+                      const b = x * x * (3 - 2 * x) * 0.5
                       flickerRaw = s1 * (1 - b) + s2 * b
                     } else {
                       flickerRaw = s1
                     }
-                  } else {
+                  } else if (sphereOn) {
+                    // CARTESIAN in sphere mode — sampled relative to the
+                    // sphere centre so the texture travels with the
+                    // corona, but uses real-space (x, y) axes so scale
+                    // changes just zoom uniformly (no angular rotation).
                     flickerRaw = nFlick(
-                      charX  * params.flickerSx,
-                      screenY * params.flickerSy + t * params.flickerSt,
+                      (charX  - cx_s) * flickerSxE,
+                      (screenY - cy_s) * flickerSyE + phaseFlicker,
+                    )
+                  } else {
+                    // Legacy band mode — always screen-axis Cartesian.
+                    flickerRaw = nFlick(
+                      charX  * flickerSxE,
+                      screenY * flickerSyE + phaseFlicker,
                     )
                   }
                   // Gamma curve (signed): pow(|f|, contrast) · sign(f).
@@ -1120,35 +1435,36 @@ export function createFire(
 
                       let noiseVal = 0
                       const ss = params.swirlScale
-                      const sp = params.swirlSpeed
+                      // phaseSwirl is the integrated swirl phase — using it
+                      // (instead of t × swirlSpeed) keeps the field continuous
+                      // when swirlSpeed blends between scroll-arc checkpoints.
+                      const sPh = phaseSwirl
                       switch (params.swirlType) {
                         case 'simplex':
                           noiseVal = nSwirl(
                             charX  * ss,
-                            screenY * ss + t * sp,
+                            screenY * ss + sPh,
                           )
                           break
                         case 'turbulence': {
-                          // 3-octave fBm: smooth base + finer detail.
-                          const n0 = nSwirl(charX * ss,       screenY * ss       + t * sp)
-                          const n1 = nSwirl(charX * ss * 2.1, screenY * ss * 2.1 + t * sp * 1.4)
-                          const n2 = nSwirl(charX * ss * 4.3, screenY * ss * 4.3 + t * sp * 2.0)
+                          // 3-octave fBm: smooth base + finer detail.  The
+                          // 1.4× / 2.0× rate multipliers are applied to the
+                          // accumulated phase so the higher octaves still
+                          // evolve faster than the base octave.
+                          const n0 = nSwirl(charX * ss,       screenY * ss       + sPh)
+                          const n1 = nSwirl(charX * ss * 2.1, screenY * ss * 2.1 + sPh * 1.4)
+                          const n2 = nSwirl(charX * ss * 4.3, screenY * ss * 4.3 + sPh * 2.0)
                           noiseVal = n0 * 0.6 + n1 * 0.3 + n2 * 0.1
                           break
                         }
                         case 'radial':
-                          // Same distance from sphere → same swirl angle.
-                          noiseVal = nSwirl(sdd * ss, t * sp)
+                          noiseVal = nSwirl(sdd * ss, sPh)
                           break
                         case 'angular':
-                          // Same angle around sphere → same swirl.  ang is
-                          // in radians [-π, π]; multiplier scales it into
-                          // a meaningful number of cycles around the corona.
-                          noiseVal = nSwirl(sAng * (ss * 200), t * sp)
+                          noiseVal = nSwirl(sAng * (ss * 200), sPh)
                           break
                         case 'pulse':
-                          // Pure time oscillation; spatial uniformity.
-                          noiseVal = Math.sin(t * sp * TWO_PI)
+                          noiseVal = Math.sin(sPh * TWO_PI)
                           break
                       }
 
@@ -1165,8 +1481,9 @@ export function createFire(
                       const lenWeight = maxFlameR > 1
                         ? (sFL / maxFlameR) * (sFL / maxFlameR)
                         : 1
+                      const effectiveSwirlStrength = isRightEyeHovered ? 0 : params.swirlStrength
                       const angleOffset =
-                        noiseVal * params.swirlStrength * tipWeight * lenWeight
+                        noiseVal * effectiveSwirlStrength * tipWeight * lenWeight
                       const cosA = Math.cos(angleOffset)
                       const sinA = Math.sin(angleOffset)
                       drawX = cx_s + sdx * cosA - sdy * sinA
@@ -1174,14 +1491,13 @@ export function createFire(
                     }
                   }
 
-                  // ── Curl vortices ────────────────────────────────────────
-                  // Rotate the char around each nearby vortex centre.  Each
-                  // vortex carries its own strength + radius (drawn from the
-                  // [min, max] ranges), so the corona has a varied set of
-                  // CW / CCW / mild / strong eddies rather than a uniform
-                  // pattern.  Falloff is a gaussian so the effect dies off
-                  // smoothly past 3σ.  Rotations from overlapping vortices
-                  // accumulate linearly in the angle.
+                  // ── Curl vortices (repel) ────────────────────────────────
+                  // Push the char radially OUTWARD from each nearby vortex
+                  // centre.  Each vortex carries its own amplitude (px) +
+                  // radius (drawn from the [min, max] ranges), so the corona
+                  // has a varied set of mild / strong repulsion points (and
+                  // negative strengths attract instead).  Falloff is a
+                  // gaussian so the effect dies off smoothly past 3σ.
                   if (numCurls > 0) {
                     for (let v = 0; v < numCurls; v++) {
                       const vx = curlCenters[v * 4]
@@ -1194,13 +1510,12 @@ export function createFire(
                       const cdx = drawX - vx
                       const cdy = drawY - vy
                       const cd2 = cdx * cdx + cdy * cdy
-                      if (cd2 > cutoff2) continue
+                      if (cd2 > cutoff2 || cd2 < 0.25) continue
                       const influence = Math.exp(-cd2 / (2 * sig2))
-                      const cAng = vS * influence
-                      const cC = Math.cos(cAng)
-                      const cS = Math.sin(cAng)
-                      drawX = vx + cdx * cC - cdy * cS
-                      drawY = vy + cdx * cS + cdy * cC
+                      const cd = Math.sqrt(cd2)
+                      const push = vS * influence
+                      drawX += (cdx / cd) * push
+                      drawY += (cdy / cd) * push
                     }
                   }
 
@@ -1235,7 +1550,7 @@ export function createFire(
                   }
 
                   // Constant center repel effect (like the mouse effect but anchored to the middle)
-                  if (centerRepelStrength > 0.001) {
+                  if (centerRepelStrength > 0.001 || leftRepelStrength > 0.001 || rightRepelStrength > 0.001) {
                     if (centerRepelEffect && fadeMain > 0) {
                       const out = centerRepelEffect.displace(
                         drawX, drawY, cx_s, h * 0.8, timeMs, centerRepelStrength * fadeMain
@@ -1244,13 +1559,13 @@ export function createFire(
                     }
                     if (leftRepelEffect && fadeLeft > 0) {
                       const out = leftRepelEffect.displace(
-                        drawX, drawY, cx_s - w * 0.15, h * 0.85, timeMs, centerRepelStrength * fadeLeft
+                        drawX, drawY, cx_s - w * 0.15, h * 0.85, timeMs, leftRepelStrength * fadeLeft
                       )
                       drawX = out[0]; drawY = out[1]
                     }
                     if (rightRepelEffect && fadeRight > 0) {
                       const out = rightRepelEffect.displace(
-                        drawX, drawY, cx_s + w * 0.15, h * 0.85, timeMs, centerRepelStrength * fadeRight
+                        drawX, drawY, cx_s + w * 0.15, h * 0.85, timeMs, rightRepelStrength * fadeRight
                       )
                       drawX = out[0]; drawY = out[1]
                     }
@@ -1299,41 +1614,142 @@ export function createFire(
       }
 
       // ── Draw stable pupils ────────────────────────────────────────────────
-      if (centerRepelStrength > 0.001) {
+      let bgWordToDraw: string | null = null
+      let bgWordColor: string | null = null
+
+      if (centerRepelStrength > 0 || leftRepelStrength > 0 || rightRepelStrength > 0) {
         ctx.save()
         // Use the brightest color (the tip of the flame)
         ctx.fillStyle = palette[palette.length - 1].fill
         ctx.textAlign = 'center'
         ctx.textBaseline = 'middle'
 
+        const eyePositions = [
+          { x: cx_s, y: h * 0.8 },
+          { x: cx_s - w * 0.15, y: h * 0.85 + 80 },
+          { x: cx_s + w * 0.15, y: h * 0.85 + 80 },
+        ]
+
         const drawPupil = (char: string, px: number, py: number, pupilIndex: number, repelFade: number) => {
           if (repelFade <= 0) return
-          const lx = cursorX - px
-          const ly = cursorY - py
-          const lDist = Math.sqrt(lx * lx + ly * ly)
+
+          let lookTargetX = cursorX
+          let lookTargetY = cursorY
+          let isLookingAtCursor = true
+
+          let inProgressIdx = -1
+          if (collectedWordsList.main.length < 5) inProgressIdx = 0
+          else if (collectedWordsList.left.length < 5) inProgressIdx = 1
+          else if (collectedWordsList.right.length < 5) inProgressIdx = 2
           
+          let isFinished = false
+          if (pupilIndex === 0) isFinished = collectedWordsList.main.length >= 5
+          else if (pupilIndex === 1) isFinished = collectedWordsList.left.length >= 5
+          else if (pupilIndex === 2) isFinished = collectedWordsList.right.length >= 5
+
+          if (isFinished && inProgressIdx !== -1) {
+            lookTargetX = eyePositions[inProgressIdx].x
+            lookTargetY = eyePositions[inProgressIdx].y
+            isLookingAtCursor = false
+          }
+
+          const lookDx = lookTargetX - px
+          const lookDy = lookTargetY - py
+          const lookDist = Math.sqrt(lookDx * lookDx + lookDy * lookDy)
+
+          const cursorDx = cursorX - px
+          const cursorDy = cursorY - py
+          const cursorDist = Math.sqrt(cursorDx * cursorDx + cursorDy * cursorDy)
+
           let targetOx = 0
           let targetOy = 0
-          
-          if (lDist > 0 && cursorActive) {
-            const maxLook = 30 * pupilLookStrength // Pushed further to the edge
-            const lookAmt = Math.min(lDist / 300, 1) * maxLook
-            targetOx = (lx / lDist) * lookAmt
-            targetOy = (ly / lDist) * lookAmt
+
+          if (lookDist > 0 && (isLookingAtCursor ? cursorActive : true)) {
+            const maxLook = (pupilIndex === 0 ? 55 : 35) * pupilLookStrength // Pushed further out, especially for center eye
+            const lookAmt = Math.min(lookDist / 300, 1) * maxLook
+            targetOx = (lookDx / lookDist) * lookAmt
+            targetOy = (lookDy / lookDist) * lookAmt
           }
-          
+
           // Smooth organic tracking via simple lerp
           pupilOffsets[pupilIndex].x += (targetOx - pupilOffsets[pupilIndex].x) * 0.15
           pupilOffsets[pupilIndex].y += (targetOy - pupilOffsets[pupilIndex].y) * 0.15
 
           let charToDraw = char
-          if (pupilIndex === 0 && lDist < 60 && cursorActive) {
-            // Cursor aligns with central pupil -> shift iris to words
-            const wordIndex = Math.floor(timeMs / 150) % quotesCaps.length
-            charToDraw = quotesCaps[wordIndex]
+          let isHoveringWord = false
+          let hoveredWordIndex = -1
+
+          if (cursorDist < 60 && cursorActive && pupilIndex === inProgressIdx) {
+            // Pick a new word if we aren't currently locked, or if the lock expired
+            if (timeMs > activeWordEndTime) {
+              const list = pupilIndex === 0 ? mainEyeWords : (pupilIndex === 1 ? leftEyeWords : rightEyeWords);
+              activeWordIndex = list[Math.floor(timeMs / 400) % list.length]; // pseudo-random word from the fast-appearance list
+              activeWordEndTime = timeMs + 400 // lock for at least 400ms on screen
+              activeWordEyeIndex = pupilIndex // bind lock to this specific eye
+            }
           }
 
-          ctx.globalAlpha = Math.min(1, centerRepelStrength * 3) * repelFade
+          if (activeWordIndex !== -1 && pupilIndex === activeWordEyeIndex && timeMs <= activeWordEndTime) {
+            isHoveringWord = true
+            hoveredWordIndex = activeWordIndex
+            charToDraw = quotesCaps[hoveredWordIndex]
+          }
+
+          // Strobe effect: alternate color and black if hovering
+          if (isHoveringWord) {
+            ctx.font = fontShorthand(pupilIndex === 0 ? 1.10 : 1.05) // Main eye +10%, side eyes +5%
+            if (pupilIndex === inProgressIdx || pupilIndex === activeWordEyeIndex) inProgressEyeHovered = true
+
+            let isColored = false
+            let color = '#ffffff'
+            let darkColor = '#000000' // Black for non-colored words
+            
+            if (pupilIndex === 0 && mainColoredWords.has(hoveredWordIndex)) {
+              isColored = true
+              color = params.wordColorMain
+              if (collectedWordsList.main.length < 5 && !collectedWords.main.has(charToDraw)) {
+                collectedWords.main.add(charToDraw)
+                collectedWordsList.main.push(charToDraw)
+              }
+            } else if (pupilIndex === 1 && leftColoredWords.has(hoveredWordIndex)) {
+              isColored = true
+              color = params.wordColorLeft
+              if (collectedWordsList.left.length < 5 && !collectedWords.left.has(charToDraw)) {
+                collectedWords.left.add(charToDraw)
+                collectedWordsList.left.push(charToDraw)
+              }
+            } else if (pupilIndex === 2 && rightColoredWords.has(hoveredWordIndex)) {
+              isColored = true
+              color = params.wordColorRight
+              if (collectedWordsList.right.length < 5 && !collectedWords.right.has(charToDraw)) {
+                collectedWords.right.add(charToDraw)
+                collectedWordsList.right.push(charToDraw)
+              }
+            }
+
+            if (isColored) {
+              const rgb = hexToRgb(color)
+              const dr = Math.floor(rgb[0] * 0.3)
+              const dg = Math.floor(rgb[1] * 0.3)
+              const db = Math.floor(rgb[2] * 0.3)
+              darkColor = `#${dr.toString(16).padStart(2, '0')}${dg.toString(16).padStart(2, '0')}${db.toString(16).padStart(2, '0')}`
+            }
+
+            const isVisibleCycle = Math.floor(timeMs / 50) % 2 === 0
+            const finalColor = isVisibleCycle ? color : darkColor
+            ctx.fillStyle = finalColor
+
+            if (isColored) {
+              bgWordToDraw = charToDraw
+              bgWordColor = finalColor
+            }
+          } else {
+            ctx.font = fontShorthand() // Restore normal size for 'O'
+            ctx.fillStyle = palette[palette.length - 1].fill
+          }
+
+          const strength = pupilIndex === 0 ? centerRepelStrength : (pupilIndex === 1 ? leftRepelStrength : rightRepelStrength)
+          ctx.globalAlpha = Math.min(1, strength * 3) * repelFade
           ctx.fillText(charToDraw, px + pupilOffsets[pupilIndex].x, py + pupilOffsets[pupilIndex].y)
         }
 
@@ -1405,6 +1821,30 @@ export function createFire(
         ctx.filter = 'none'
         ctx.globalCompositeOperation = 'source-over'
       }
+
+      if (bgWordToDraw && bgWordColor) {
+        ctx.save()
+        ctx.globalCompositeOperation = 'source-over'
+        ctx.fillStyle = bgWordColor
+        ctx.textAlign = 'center'
+        ctx.textBaseline = 'alphabetic'
+        
+        const baseSize = 100
+        ctx.font = `900 ${baseSize}px Inter, sans-serif`
+        const metrics = ctx.measureText(bgWordToDraw)
+        
+        const textWidth = metrics.width || 1
+        const textHeight = (metrics.actualBoundingBoxAscent + metrics.actualBoundingBoxDescent) || baseSize
+        
+        ctx.translate(w / 2, h / 2)
+        ctx.scale(w / textWidth, h / textHeight)
+        
+        // Offset Y to perfectly center the bounding box vertically
+        const yOffset = (metrics.actualBoundingBoxAscent - metrics.actualBoundingBoxDescent) / 2 || 0
+        ctx.fillText(bgWordToDraw, 0, yOffset)
+        
+        ctx.restore()
+      }
     },
 
     resize(nextW, nextH) {
@@ -1452,23 +1892,28 @@ export function createFire(
     setCursorEffect(e) {
       cursorEffect = e
     },
-    setCenterRepels(main, left, right, strength, lookStrength = 1) {
+    setCenterRepels(main, left, right, strength, lookStrength = 1, leftStrength = strength, rightStrength = strength) {
       centerRepelEffect = main
       leftRepelEffect = left
       rightRepelEffect = right
       centerRepelStrength = strength
       pupilLookStrength = lookStrength
+      leftRepelStrength = leftStrength
+      rightRepelStrength = rightStrength
     },
 
-    getCurrentTipColor(timeMs) {
-      const t = timeMs * 0.001
-      const hueDeg =
-        params.colorHueShiftSpeed > 0
-          ? (t * params.colorHueShiftSpeed) % 360
-          : 0
-      const rgb = hslToRgb(hslTip[0] + hueDeg, hslTip[1], hslTip[2])
+    getCollectedWords() {
+      return collectedWordsList
+    },
+
+    getCurrentTipColor(_timeMs) {
+      // Reads the integrated `phaseHue` accumulator that the draw loop
+      // advances each frame, so the tip-colour cycle stays continuous when
+      // colorHueShiftSpeed blends between scroll-arc checkpoints.
+      const rgb = hslToRgb(hslTip[0] + phaseHue, hslTip[1], hslTip[2])
       return `rgb(${rgb[0]},${rgb[1]},${rgb[2]})`
     },
+    isInProgressEyeHovered() { return inProgressEyeHovered },
   }
 }
 
