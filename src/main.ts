@@ -1,4 +1,13 @@
 import "./style.css";
+import defaultSettings from "./default-settings.json";
+
+// Seed localStorage with the designed defaults on every load so visitors
+// always see the intended visual style, even if they previously tweaked
+// values via the dev control panels.
+for (const [key, value] of Object.entries(defaultSettings)) {
+  localStorage.setItem(key, value as string);
+}
+
 import type { FireParams } from "./fire";
 import { createFire } from "./fire";
 import { mountControls } from "./controls";
