@@ -54,8 +54,8 @@ const mainEyeWords = createEyeWordList(mainColoredWords);
 const leftEyeWords = createEyeWordList(leftColoredWords);
 const rightEyeWords = createEyeWordList(rightColoredWords);
 
-const leftEyeModules = import.meta.glob('./images/left/*.{svg,png,jpg,jpeg,webp}', { eager: true, as: 'url' });
-const rightEyeModules = import.meta.glob('./images/right/*.{svg,png,jpg,jpeg,webp}', { eager: true, as: 'url' });
+const leftEyeModules = import.meta.glob('./images/left/*.{svg,png,jpg,jpeg,webp}', { eager: true, query: '?url', import: 'default' });
+const rightEyeModules = import.meta.glob('./images/right/*.{svg,png,jpg,jpeg,webp}', { eager: true, query: '?url', import: 'default' });
 
 const LEFT_EYE_IMAGE_URLS = Object.values(leftEyeModules) as string[];
 const RIGHT_EYE_IMAGE_URLS = Object.values(rightEyeModules) as string[];
