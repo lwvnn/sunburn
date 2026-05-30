@@ -36,6 +36,26 @@ import { NUMERIC_KEYS } from "./scroll-arc";
 import { mountSectionNav } from "./section-nav";
 import quotes from "./corpus/quotes.json";
 import quotesCaps from "./corpus/quotes_caps.json";
+import quotesCapsLinked from "./corpus/quotes_caps_linked.json";
+
+// Build the word → { phrase, source } lookup once at module init.  Last
+// entry wins on duplicate words.  Empty phrase is a valid "no entry" —
+// the stripe gate in fire.ts skips rendering when the phrase is empty.
+type LinkedEntry = { phrase: string; source: string };
+const linkedByWord = new Map<string, LinkedEntry>();
+for (const e of quotesCapsLinked as ReadonlyArray<{
+  word: string;
+  phrase: string;
+  source: string;
+}>) {
+  if (e.word && e.phrase) {
+    linkedByWord.set(e.word, { phrase: e.phrase, source: e.source ?? "" });
+  }
+}
+const EMPTY_LINKED: LinkedEntry = { phrase: "", source: "" };
+function linkedForWord(w: string): LinkedEntry {
+  return linkedByWord.get(w) ?? EMPTY_LINKED;
+}
 
 // ─── Corpus ────────────────────────────────────────────────────────────────
 // Build the fire's text source by Fisher-Yates-shuffling the quotes pool
@@ -101,7 +121,10 @@ const sideRepelParams = {
   amp: 50,
   noiseAmp: 0.0,
   fadeSpeed: 0.5,
-  squint: 0.45,
+  // `squint` flattens the top of the repel hole — it made the eye taller
+  // below center than above, so the geometric centre (where the pupil text
+  // is drawn) sat in the upper portion of the visible hole and the pupil
+  // couldn't appear to look down at the cursor.  Symmetric hole now.
 };
 
 const leftRepelEffect = createCursorEffect();
@@ -109,6 +132,111 @@ leftRepelEffect.setParams(sideRepelParams);
 
 const rightRepelEffect = createCursorEffect();
 rightRepelEffect.setParams(sideRepelParams);
+
+
+// Decorative eyes — 5 non-interactive repel holes that pop open one at a
+// time as the central eye collects coloured words, and all close once the
+// central eye reaches 5.  Smaller field / amp than the side eyes so they
+// read as a row of "subordinate" pupils.
+const DECOR_EYE_COUNT = 5;
+const decorRepelParams = {
+  effect: "repel" as const,
+  fieldR: 120,
+  amp: 30,
+  noiseAmp: 0.0,
+  fadeSpeed: 0.5,
+  squint: 0.45,
+};
+const decorEyeEffects = Array.from({ length: DECOR_EYE_COUNT }, () => {
+  const e = createCursorEffect();
+  e.setParams(decorRepelParams);
+  return e;
+});
+const decorEyeActuals = new Array<number>(DECOR_EYE_COUNT).fill(0);
+const decorEyeVelocities = new Array<number>(DECOR_EYE_COUNT).fill(0);
+
+// ── Final-scene wall eyes ─────────────────────────────────────────────────
+// 15 decor-style repel eyes laid out in a hex grid (3 rows × 5 cols, even
+// rows offset by half a cell).  Each eye is bound to one of the 15
+// collected words; on cursor hover the canvas pupil swaps from 'O' to
+// that word.  Same rendering technique as the decorative eyes — repel
+// hole punched into the fire, pupil drawn by fire.ts on top.
+const WALL_EYE_COUNT = 15;
+const wallRepelParams = {
+  effect: "repel" as const,
+  fieldR: 140,
+  amp: 36,
+  noiseAmp: 0.0,
+  fadeSpeed: 0.5,
+  squint: 0.45,
+};
+const wallEyeEffects = Array.from({ length: WALL_EYE_COUNT }, () => {
+  const e = createCursorEffect();
+  e.setParams(wallRepelParams);
+  return e;
+});
+const wallEyeActuals = new Array<number>(WALL_EYE_COUNT).fill(0);
+const wallEyeVelocities = new Array<number>(WALL_EYE_COUNT).fill(0);
+const wallEyeWords: string[] = new Array<string>(WALL_EYE_COUNT).fill("");
+let wallActive = false;
+// Stripe state — smoothed 0..1 intensity (driven by whether the cursor is
+// over a wall eye) and the bound phrase currently being displayed.  The
+// phrase is NOT reset when the cursor leaves a hovered eye — we just let
+// stripeActual fade to 0 with the old phrase still cached, so transitions
+// look uniform.
+let stripeActual = 0;
+let stripePhrase = "";
+let stripeSource = "";
+// Hit-test radius for wall-eye hover.  Slightly larger than fire.ts's
+// WALL_EYE_HOVER_R = 70 (which drives the in-canvas pupil swap) so the
+// closing animation triggers a touch earlier than the word-swap.
+const WALL_HOVER_R = 80;
+// Chaotic-but-evenly-spaced wall positions, regenerated whenever the
+// viewport size changes.  Poisson-disc-style rejection sampling: random
+// candidates inside a padded viewport, rejected if closer than `minDist`
+// to any already-placed eye.
+let wallPositions: ReadonlyArray<{ x: number; y: number }> = [];
+let wallPositionsW = 0;
+let wallPositionsH = 0;
+
+function generateWallPositions(
+  vw: number,
+  vh: number,
+  isExcluded: (x: number, y: number) => boolean = () => false,
+): ReadonlyArray<{ x: number; y: number }> {
+  const padding = Math.min(vw, vh) * 0.1;
+  // ~equal min-distance; tuned so 15 eyes comfortably fit a desktop
+  // viewport without crowding.  Falls back to a relaxed value if the
+  // first pass can't place all 15.
+  let minDist = Math.min(vw, vh) * 0.22;
+  const out: Array<{ x: number; y: number }> = [];
+  for (let relax = 0; relax < 6 && out.length < WALL_EYE_COUNT; relax++) {
+    out.length = 0;
+    const md2 = minDist * minDist;
+    let attempts = 0;
+    while (out.length < WALL_EYE_COUNT && attempts < 5000) {
+      attempts++;
+      const x = padding + Math.random() * (vw - 2 * padding);
+      const y = padding + Math.random() * (vh - 2 * padding);
+      // Caller-supplied exclusion zone (central eye + name bbox).
+      if (isExcluded(x, y)) continue;
+      let ok = true;
+      for (let k = 0; k < out.length; k++) {
+        const dx = x - out[k].x;
+        const dy = y - out[k].y;
+        if (dx * dx + dy * dy < md2) {
+          ok = false;
+          break;
+        }
+      }
+      if (ok) out.push({ x, y });
+    }
+    // If we couldn't place all 15, loosen the spacing requirement and
+    // try again so we still hit exactly WALL_EYE_COUNT.
+    minDist *= 0.9;
+  }
+  return out;
+}
 
 const scrollArc = createScrollArc();
 mountControls(fire, scrollArc);
@@ -306,12 +434,16 @@ const WHEEL_SCALE = 0.25;
 let scrollVelocity = 0;
 let inertiaLastT = performance.now();
 let scrollLocked = true;
+// True only while the post-ending rAF carries the page down to the
+// eye-wall; blocks user wheel / touch / key input so the smooth-scroll
+// can't be fought.
+let autoScrolling = false;
 
 window.addEventListener(
   "wheel",
   (e: WheelEvent) => {
     e.preventDefault();
-    if (scrollLocked) {
+    if (scrollLocked || autoScrolling) {
       scrollVelocity = 0;
       return;
     }
@@ -337,7 +469,7 @@ window.addEventListener(
 window.addEventListener(
   "touchmove",
   (e: TouchEvent) => {
-    if (scrollLocked) e.preventDefault();
+    if (scrollLocked || autoScrolling) e.preventDefault();
   },
   { passive: false },
 );
@@ -345,7 +477,7 @@ window.addEventListener(
 window.addEventListener(
   "keydown",
   (e: KeyboardEvent) => {
-    if (!scrollLocked) return;
+    if (!scrollLocked && !autoScrolling) return;
     const blocked = [
       "ArrowDown",
       "ArrowUp",
@@ -392,7 +524,9 @@ function updateInertia(t: number): void {
 
 let globalStrobeFramesLeft = 0;
 let hasStrobed = false;
-// removed sideEyesVelocity
+// Eye-open order: central → left → right.  Central is open from the intro,
+// left unlocks once central collects 5 words, right unlocks once left
+// collects 5 words, ending fires once right collects 5 words.
 let targetLeftOpen = 0;
 let leftEyeActual = 0;
 let leftEyeVelocity = 0;
@@ -401,77 +535,90 @@ let targetRightOpen = 0;
 let rightEyeActual = 0;
 let rightEyeVelocity = 0;
 
+// Central eye stays closed for the first FIRST_EYE_DELAY_MS after the fire
+// intro begins; flips to 1 once the delay elapses (see applyScrollProgress).
+const FIRST_EYE_DELAY_MS = 8000;
+let targetCenterOpen = 0;
+let centerEyeActual = 0;
+let centerEyeVelocity = 0;
+
+// After the central eye collects its 5 words, hold the "completed" tableau
+// for MAIN_HOLD_MS before transitioning: keeps all 5 decor eyes open, keeps
+// the giant colored-word background visible, and defers the left-eye
+// awakening — gives the user a beat to read what just appeared.
+const MAIN_HOLD_MS = 1500;
+let mainCompletedAt = -1;
+
 let hasTriggeredEnding = false;
+
+// "D" — debug jump straight to the final eye-wall.  Uses whatever has
+// been collected so far; tops up to 15 placeholder words from quotesCaps
+// so the wall is fully populated even when the user hasn't actually
+// played through.
+window.addEventListener("keydown", (e: KeyboardEvent) => {
+  if (e.key !== "d" && e.key !== "D" && e.key !== "в" && e.key !== "В") return;
+  if (hasTriggeredEnding) return;
+  hasTriggeredEnding = true;
+  const c = fire.getCollectedWords();
+  const pickFiller = (existing: string[]): string[] => {
+    const need = 5 - existing.length;
+    const filler: string[] = [];
+    while (filler.length < need) {
+      const w =
+        quotesCaps[(Math.random() * quotesCaps.length) | 0] as string;
+      if (!existing.includes(w) && !filler.includes(w)) filler.push(w);
+    }
+    return [...existing, ...filler];
+  };
+  triggerEndingSequence({
+    main: pickFiller(c.main),
+    left: pickFiller(c.left),
+    right: pickFiller(c.right),
+  });
+});
 
 function triggerEndingSequence(collected: {
   main: string[];
   left: string[];
   right: string[];
 }) {
-  const endDiv = document.createElement("div");
-  endDiv.id = "collected-columns";
-
-  const col = document.createElement("div");
-  col.className = "word-col";
-  col.style.color = "#ffffff";
-
+  // Bind the 15 collected words to the 15 wall slots.  Order: main row,
+  // left row, right row — mirrors the order eyes opened during the show.
   const allWords = [...collected.main, ...collected.left, ...collected.right];
+  for (let i = 0; i < WALL_EYE_COUNT; i++) {
+    wallEyeWords[i] = allWords[i] ?? "";
+  }
+  // Flip the wall on — applyScrollProgress will spring the strengths up
+  // and pass an updated WallEye[] to fire each frame.
+  wallActive = true;
 
-  allWords.forEach((w) => {
-    const el = document.createElement("div");
-    el.textContent = w;
-    col.appendChild(el);
-  });
-
-  endDiv.appendChild(col);
-
-  // Create marquee container
-  const marqueeContainer = document.createElement("div");
-  marqueeContainer.className = "marquee-container";
-
-  const createMarqueeTrack = (sizeClass: string, reverse: boolean = false) => {
-    const track = document.createElement("div");
-    track.className = `marquee-track ${sizeClass} ${reverse ? "reverse" : ""}`;
-
-    const createContent = () => {
-      const content = document.createElement("div");
-      content.className = "marquee-content";
-
-      const addSeparator = () => {
-        const sep = document.createElement("span");
-        sep.textContent = "•";
-        sep.style.color = "rgba(255, 255, 255, 0.3)";
-        content.appendChild(sep);
-      };
-
-      const addWords = (words: string[]) => {
-        words.forEach((w) => {
-          const span = document.createElement("span");
-          span.textContent = w;
-          span.style.color = "#ffffff";
-          content.appendChild(span);
-          addSeparator();
-        });
-      };
-      
-      addWords(quotesCaps);
-
-      return content;
-    };
-
-    track.appendChild(createContent());
-    track.appendChild(createContent());
-    return track;
-  };
-
-  marqueeContainer.appendChild(createMarqueeTrack("track-large"));
-  marqueeContainer.appendChild(createMarqueeTrack("track-small", true)); // reverse direction for variety
-  marqueeContainer.appendChild(createMarqueeTrack("track-small"));
-
-  endDiv.appendChild(marqueeContainer);
-
-  document.body.appendChild(endDiv);
+  // Release the experience-wide scroll lock so the auto-scroll can write
+  // scrollY freely, and put user input on the autoScrolling gate so
+  // wheel / touch / arrow keys can't fight the animation.
   scrollLocked = false;
+  autoScrolling = true;
+
+  const startY = window.scrollY;
+  const dur = 1700; // ms — slow enough to read as a deliberate transition.
+  const t0 = performance.now();
+  function step(t: number): void {
+    const k = Math.min(1, (t - t0) / dur);
+    // easeInOutCubic — soft start, soft stop.
+    const e = k < 0.5 ? 4 * k * k * k : 1 - Math.pow(-2 * k + 2, 3) / 2;
+    // scrollHeight may shift slightly as layout settles; recompute each
+    // step so we always land at the true bottom.
+    const endY = Math.max(
+      0,
+      document.documentElement.scrollHeight - window.innerHeight,
+    );
+    window.scrollTo(0, startY + (endY - startY) * e);
+    if (k < 1) {
+      requestAnimationFrame(step);
+    } else {
+      autoScrolling = false;
+    }
+  }
+  requestAnimationFrame(step);
 }
 
 function frame(t: number): void {
@@ -580,11 +727,23 @@ requestAnimationFrame(frame);
 // curl around it. Listening on window catches events even though the canvas
 // has `pointer-events: none` (it sits below the draggable name + UI panel).
 
+// Mirror the latest pointer position locally — used by the wall-eye
+// hover detection in applyScrollProgress (which needs cursor coords in
+// the same module that owns the wall springs).
+let mainCursorX = 0;
+let mainCursorY = 0;
+let mainCursorActive = false;
 window.addEventListener("pointermove", (e: PointerEvent) => {
+  mainCursorX = e.clientX;
+  mainCursorY = e.clientY;
+  mainCursorActive = true;
   fire.setCursor(e.clientX, e.clientY, true);
 });
 
-const releaseCursor = (): void => fire.setCursor(0, 0, false);
+const releaseCursor = (): void => {
+  mainCursorActive = false;
+  fire.setCursor(0, 0, false);
+};
 window.addEventListener("pointercancel", releaseCursor);
 window.addEventListener("blur", releaseCursor);
 // Mouse leaving the document → release. Touch lift fires pointerup; we
@@ -621,7 +780,27 @@ function smoothstep(t: number): number {
 // is anchored to "when the rAF loop actually starts running", not to
 // module evaluation time.
 const INTRO_DURATION_MS = 2500;
+// Hold the fire's grow-in until the black-screen phrase has faded out.
+// Must match the `intro-phrase-fade` animation length in style.css.
+const PHRASE_DURATION_MS = 13500;
+const pageLoadMs = performance.now();
 let introStartMs = -1;
+
+// Remove the phrase overlay from the DOM once it has finished fading.
+const phraseEl = document.getElementById("intro-phrase");
+if (phraseEl) {
+  setTimeout(() => phraseEl.classList.add("done"), PHRASE_DURATION_MS);
+}
+
+// "A" skips the opening-quote splash: marks the phrase overlay as done and
+// arms the fire/eye intro to start on the very next frame.  The fire and
+// eye openings then play their normal ramps from here — only the phrase is
+// fast-forwarded.
+window.addEventListener("keydown", (e: KeyboardEvent) => {
+  if (e.key !== "a" && e.key !== "A" && e.key !== "ф" && e.key !== "Ф") return;
+  if (phraseEl) phraseEl.classList.add("done");
+  if (introStartMs < 0) introStartMs = performance.now();
+});
 
 function applyScrollProgress(timeMs: number): void {
   const max = document.documentElement.scrollHeight - window.innerHeight;
@@ -677,7 +856,17 @@ function applyScrollProgress(timeMs: number): void {
   // current interp value, which respects KF1 — or whatever segment the
   // user has scrolled into during the intro).  This way the hand-off
   // stays seamless even if the keyframes get edited live.
-  if (introStartMs < 0) introStartMs = timeMs;
+  // Anchor the fire's intro to the moment the phrase finishes fading, not
+  // to the first rAF tick — otherwise the fire would already be at full
+  // reach by the time the user sees it.
+  if (introStartMs < 0 && timeMs - pageLoadMs >= PHRASE_DURATION_MS) {
+    introStartMs = timeMs;
+  }
+  if (introStartMs < 0) {
+    interp.flameRadialReach = 0;
+    fire.setParams(interp);
+    return;
+  }
   const introT = clamp01((timeMs - introStartMs) / INTRO_DURATION_MS);
   if (introT < 1) {
     const target = interp.flameRadialReach ?? 0;
@@ -695,20 +884,48 @@ function applyScrollProgress(timeMs: number): void {
   const c1 = 1.2; // Lower coefficient for a gentler overshoot
   const c3 = c1 + 1;
   const easeOutBack = 1 + c3 * Math.pow(u - 1, 3) + c1 * Math.pow(u - 1, 2);
-  const centerRepelStrength = u > 0 ? easeOutBack : 0;
+  // Shared intro ramp — gates every eye's strength so nothing shows up
+  // before the intro has played, regardless of which eye is "open".
+  const introOpen = u > 0 ? easeOutBack : 0;
 
   // Pupils start looking around slightly later, smoothly fading in
   // tFrac=1.2 is 2.4s (eyes halfway open), tFrac=1.8 is 3.6s
   let lookStrength = clamp01((tFrac - 1.2) * 1.66);
   lookStrength = smoothstep(lookStrength);
 
+  if (introStartMs >= 0 && timeMs - introStartMs >= FIRST_EYE_DELAY_MS) {
+    targetCenterOpen = 1;
+  }
+
   const collected = fire.getCollectedWords();
 
-  if (collected.main.length >= 5) {
+  // Record the moment the central eye finishes its 5 words and hold all
+  // downstream transitions for MAIN_HOLD_MS so the user can take it in.
+  const mainCompleted = collected.main.length >= 5;
+  if (mainCompleted && mainCompletedAt < 0) mainCompletedAt = timeMs;
+  const mainHoldActive = mainCompletedAt >= 0 && timeMs - mainCompletedAt < MAIN_HOLD_MS;
+  const mainTransitioned = mainCompleted && !mainHoldActive;
+
+  // Left eye unlocks only once the 5 decorative eyes have actually closed
+  // (not merely *started* closing).  Checking the spring outputs keeps the
+  // gate honest no matter how slow the close spring is tuned.
+  const decorAllClosed = mainTransitioned
+    && decorEyeActuals.every((a) => a < 0.05);
+  if (decorAllClosed) {
     targetLeftOpen = 1;
   }
   if (collected.left.length >= 5) {
     targetRightOpen = 1;
+  }
+
+  // Once the final wall springs into life, close the two SIDE eyes
+  // (left / right).  The central eye is intentionally left open — it
+  // anchors the composition through the transition.  Placed AFTER the
+  // per-stage open-gates above so it cleanly overrides them; the side
+  // springs then reverse and ease shut alongside the wall opening.
+  if (wallActive) {
+    targetLeftOpen = 0;
+    targetRightOpen = 0;
   }
 
   // Left eye spring physics
@@ -721,18 +938,171 @@ function applyScrollProgress(timeMs: number): void {
   rightEyeVelocity *= 0.82;
   rightEyeActual += rightEyeVelocity;
 
-  const leftStrength = centerRepelStrength * Math.max(0, leftEyeActual);
-  const rightStrength = centerRepelStrength * Math.max(0, rightEyeActual);
+  // Center eye spring physics — deliberately soft (low stiffness, high
+  // damping) so the very first opening feels like a slow awakening rather
+  // than a snap into place.
+  centerEyeVelocity += (targetCenterOpen - centerEyeActual) * 0.012;
+  centerEyeVelocity *= 0.94;
+  centerEyeActual += centerEyeVelocity;
+
+  const leftStrength = introOpen * Math.max(0, leftEyeActual);
+  const rightStrength = introOpen * Math.max(0, rightEyeActual);
+  const mainStrength = introOpen * Math.max(0, centerEyeActual);
 
   fire.setCenterRepels(
     centerRepelEffect,
     leftRepelEffect,
     rightRepelEffect,
-    centerRepelStrength,
+    mainStrength,
     lookStrength,
     leftStrength,
     rightStrength,
   );
+
+  // Decorative eyes:
+  //  • during collection — one opens per word stored on the central eye;
+  //  • during the hold window after the 5th word — all 5 are open so the
+  //    user can see them at once;
+  //  • after the hold — they all close together with a slow spring so the
+  //    farewell reads as deliberate rather than a snap.
+  const mainCollected = collected.main.length;
+  const decorStrengths = new Array<number>(DECOR_EYE_COUNT);
+  for (let i = 0; i < DECOR_EYE_COUNT; i++) {
+    let target: number;
+    if (mainTransitioned) target = 0;
+    else if (mainHoldActive) target = 1;
+    else target = i < mainCollected ? 1 : 0;
+
+    // Slower spring on the close (target < actual) so the bow-out reads
+    // languid; the opening direction keeps its original snap.
+    const isClosing = target < decorEyeActuals[i];
+    const k = isClosing ? 0.015 : 0.06;
+    const damp = isClosing ? 0.94 : 0.82;
+    decorEyeVelocities[i] += (target - decorEyeActuals[i]) * k;
+    decorEyeVelocities[i] *= damp;
+    decorEyeActuals[i] += decorEyeVelocities[i];
+    decorStrengths[i] = introOpen * Math.max(0, decorEyeActuals[i]);
+  }
+  fire.setDecorEyes(decorEyeEffects, decorStrengths);
+
+  // ── Final wall eyes ───────────────────────────────────────────────────
+  // Active only after triggerEndingSequence flipped `wallActive`.
+  // Positions: chaotic-but-evenly-spaced (Poisson-disc rejection
+  // sampling, generated once per viewport size).  Each eye springs from
+  // 0 → 1; strength is gated by introOpen so the wall can't appear
+  // before the intro has run.
+  if (wallActive) {
+    if (
+      wallPositions.length !== WALL_EYE_COUNT ||
+      wallPositionsW !== w ||
+      wallPositionsH !== h
+    ) {
+      // Exclusion zones — wall eyes shouldn't spawn on top of either the
+      // central eye (still open during the wall) or the page-title name.
+      const fp = fire.getParams();
+      const cx = w * fp.sphereCxFrac;
+      const cy = h * 0.8; // matches drawPupil(main, cx_s, h*0.8)
+      // Big enough to leave a clear ring of empty space around the central
+      // eye + its hover halo.
+      const centerR = Math.max(200, Math.min(w, h) * 0.18);
+      const cr2 = centerR * centerR;
+      // Name bbox + padding — read each (re-)generation so live edits in
+      // name-controls take effect.
+      const nameRect =
+        nameEl && nameEl.offsetWidth > 0 ? nameEl.getBoundingClientRect() : null;
+      const namePad = 32;
+      const isExcluded = (x: number, y: number): boolean => {
+        const dxc = x - cx;
+        const dyc = y - cy;
+        if (dxc * dxc + dyc * dyc < cr2) return true;
+        if (
+          nameRect &&
+          x >= nameRect.left - namePad &&
+          x <= nameRect.right + namePad &&
+          y >= nameRect.top - namePad &&
+          y <= nameRect.bottom + namePad
+        ) {
+          return true;
+        }
+        return false;
+      };
+      wallPositions = generateWallPositions(w, h, isExcluded);
+      wallPositionsW = w;
+      wallPositionsH = h;
+    }
+    const eyes: Array<{
+      effect: ReturnType<typeof createCursorEffect> | null;
+      x: number;
+      y: number;
+      strength: number;
+      word: string;
+      wordColor: string;
+    }> = [];
+    // Per-eye word colour: indices 0..4 = main (red), 5..9 = left (blue),
+    // 10..14 = right (orange).  Mirrors the order words were pushed into
+    // wallEyeWords in triggerEndingSequence.
+    const fp = fire.getParams();
+    const groupColors = [
+      fp.wordColorMain,
+      fp.wordColorLeft,
+      fp.wordColorRight,
+    ];
+
+    // Hover hit-test: nearest wall eye within WALL_HOVER_R, or -1.
+    let hoverIdx = -1;
+    if (mainCursorActive) {
+      let bestD2 = WALL_HOVER_R * WALL_HOVER_R;
+      for (let i = 0; i < WALL_EYE_COUNT; i++) {
+        const pos = wallPositions[i];
+        const dxh = mainCursorX - pos.x;
+        const dyh = mainCursorY - pos.y;
+        const d2 = dxh * dxh + dyh * dyh;
+        if (d2 < bestD2) {
+          bestD2 = d2;
+          hoverIdx = i;
+        }
+      }
+    }
+
+    for (let i = 0; i < WALL_EYE_COUNT; i++) {
+      // Hover override: while one eye is hovered, the other 14 close.
+      // When no eye is hovered, all 15 open back up.
+      const target = hoverIdx < 0 ? 1 : i === hoverIdx ? 1 : 0;
+      wallEyeVelocities[i] += (target - wallEyeActuals[i]) * 0.06;
+      wallEyeVelocities[i] *= 0.82;
+      wallEyeActuals[i] += wallEyeVelocities[i];
+
+      const pos = wallPositions[i];
+      const groupIdx = Math.min(2, Math.floor(i / 5));
+      eyes.push({
+        effect: wallEyeEffects[i],
+        x: pos.x,
+        y: pos.y,
+        strength: introOpen * Math.max(0, wallEyeActuals[i]),
+        word: wallEyeWords[i],
+        wordColor: groupColors[groupIdx],
+      });
+    }
+    fire.setWallEyes(eyes);
+
+    // Stripe pacing — a touch livelier than the eye springs (k=0.10,
+    // damp=0.85) so the fire→stripe morph reads as decisive rather than
+    // mushy.  Cache the phrase whenever we have a hover so it lingers
+    // through the fade-out when the cursor leaves.
+    if (hoverIdx >= 0) {
+      const linked = linkedForWord(wallEyeWords[hoverIdx]);
+      stripePhrase = linked.phrase;
+      stripeSource = linked.source;
+    }
+    const stripeTarget = hoverIdx >= 0 && stripePhrase.length > 0 ? 1 : 0;
+    // Pure exponential approach (no overshoot) — gives a clean fade in /
+    // fade out, no flicker from the spring oscillating past 1 (which
+    // briefly amplified the displacement field and made chars jitter).
+    stripeActual += (stripeTarget - stripeActual) * 0.10;
+    if (stripeActual < 0) stripeActual = 0;
+    else if (stripeActual > 1) stripeActual = 1;
+    fire.setStripe(stripeActual, stripePhrase, stripeSource);
+  }
 
   if (collected.right.length >= 5 && !hasTriggeredEnding) {
     hasTriggeredEnding = true;

@@ -20,6 +20,7 @@ import {
   layoutNextLineRange,
   materializeLineRange,
   type LayoutCursor,
+  type PreparedTextWithSegments,
 } from '@chenglou/pretext'
 import { createNoise2D } from 'simplex-noise'
 import type { CursorEffect } from './cursor-effects'
@@ -479,6 +480,33 @@ export interface Fire {
    */
   /** Permanently anchor three repels (main, left, right) and explicitly control their strength. */
   setCenterRepels(main: CursorEffect | null, left: CursorEffect | null, right: CursorEffect | null, strength: number, lookStrength?: number, leftStrength?: number, rightStrength?: number): void
+  /** Decorative non-interactive eyes — N repel effects with N matching strengths.
+   *  Positions are derived inside the fire (evenly spaced arc above the
+   *  central eye) so they scale with the viewport.  Pupils are never drawn. */
+  setDecorEyes(effects: ReadonlyArray<CursorEffect | null>, strengths: ReadonlyArray<number>): void
+  /** Final-scene wall of eyes — each eye carries an explicit viewport-CSS-pixel
+   *  position, a strength (0..1), and a "bound word" that replaces its 'O'
+   *  pupil whenever the cursor is within ~70 px of the eye centre.
+   *  Renders with the same decor-eye technique (repel hole + canvas pupil),
+   *  not a separate DOM overlay. */
+  setWallEyes(eyes: ReadonlyArray<{
+    effect: CursorEffect | null
+    x: number
+    y: number
+    strength: number
+    word: string
+    /** CSS colour for the word when the eye is hovered.  Matches the
+     *  colour the word had during its original collection (main / left /
+     *  right palette entry).  Optional — falls back to the palette tip. */
+    wordColor?: string
+  }>): void
+  /** Final-scene "glowing horizontal stripe".  When `t > 0` the fire
+   *  pass renders the bound `phrase` (looped) inside a thin Y-band at
+   *  viewport centre, with `source` printed dimmer on a second line
+   *  beneath the phrase.  The corpus outside the band fades out with
+   *  `t`.  `t` is the smoothed 0..1 intensity, driven by main.ts based
+   *  on whether the cursor is over a wall eye. */
+  setStripe(t: number, phrase: string, source: string): void
   getCollectedWords(): { main: string[]; left: string[]; right: string[] }
   /**
    * Read the live `colorTip` palette stop with the current hue rotation
@@ -529,11 +557,13 @@ export function createFire(
   const nFlick = createNoise2D()
   /** Drives the noise-based tip swirl (sphere mode). */
   const nSwirl = createNoise2D()
+  /** Smoothly-moving 2D noise used to wobble the per-letter offsets of
+   *  the words drawn inside the final-wall pupils on hover. */
+  const nWallWord = createNoise2D()
 
   // Offscreen scratch canvas used by the glow post-pass — resized to match
   // the main canvas's device-pixel buffer on demand.
-  const glowCanvas = document.createElement('canvas')
-  const glowCtx = glowCanvas.getContext('2d')!
+  // (Glow post-pass removed — its scratch canvas is no longer needed.)
 
   const params: FireParams = { ...FIRE_DEFAULTS }
 
@@ -553,16 +583,55 @@ export function createFire(
     letterSpacing: params.letterSpacing,
   })
 
+  // ── Stripe state ──────────────────────────────────────────────────────
+  // The final-scene "glowing horizontal stripe" is drawn through the same
+  // pretext-driven fire pass as the corpus — just with a separately
+  // prepared text source (the bound phrase) at a scaled-up font size, and
+  // the row-walk constrained to a thin Y band around the viewport centre.
+  // Off when stripeT == 0.
+  const PHRASE_FONT_SCALE = 1.8
+  let stripeT = 0
+  let stripePhrase = ''
+  let stripeSource = ''
+  let phrasePrepared: PreparedTextWithSegments | null = null
+  let phrasePreparedText = ''
+  let stripeCursor: LayoutCursor = { segmentIndex: 0, graphemeIndex: 0 }
+  function rebuildPhrasePrepared(): void {
+    if (!stripePhrase) {
+      phrasePrepared = null
+      phrasePreparedText = ''
+      stripeCursor = { segmentIndex: 0, graphemeIndex: 0 }
+      return
+    }
+    // Loop the phrase with a soft separator so layoutNextLineRange has an
+    // infinite stream to walk (matches the corpus pattern in main.ts).
+    const looped = stripePhrase + ' • '
+    phrasePrepared = prepareWithSegments(looped, fontShorthand(PHRASE_FONT_SCALE), {
+      letterSpacing: params.letterSpacing,
+    })
+    phrasePreparedText = stripePhrase
+    stripeCursor = { segmentIndex: 0, graphemeIndex: 0 }
+  }
+
   // Offscreen 2D context purely for cached per-character width measurement.
+  // Two parallel caches — one at the corpus font size, one at the scaled
+  // phrase font size — so the stripe rows can pull correct widths without
+  // disturbing the corpus cache.
   const measureCanvas = document.createElement('canvas')
   const measureCtx = measureCanvas.getContext('2d')!
   const charWidthCache = new Map<string, number>()
+  const phraseMeasureCanvas = document.createElement('canvas')
+  const phraseMeasureCtx = phraseMeasureCanvas.getContext('2d')!
+  const phraseCharWidthCache = new Map<string, number>()
 
   function applyMeasureCtxFont(): void {
     measureCtx.font = fontShorthand()
     // Canvas letterSpacing is supported in modern browsers; cast through
     // unknown so older lib.dom typings don't trip the build.
     ;(measureCtx as unknown as { letterSpacing?: string }).letterSpacing =
+      `${params.letterSpacing}px`
+    phraseMeasureCtx.font = fontShorthand(PHRASE_FONT_SCALE)
+    ;(phraseMeasureCtx as unknown as { letterSpacing?: string }).letterSpacing =
       `${params.letterSpacing}px`
   }
   applyMeasureCtxFont()
@@ -576,13 +645,31 @@ export function createFire(
     return cw
   }
 
+  function phraseCharWidth(ch: string): number {
+    let cw = phraseCharWidthCache.get(ch)
+    if (cw === undefined) {
+      cw = phraseMeasureCtx.measureText(ch).width + params.letterSpacing
+      phraseCharWidthCache.set(ch, cw)
+    }
+    return cw
+  }
+
   /** Re-prep Pretext + clear measurement caches when font changes. */
   function recomputeFont(): void {
     prepared = prepareWithSegments(text, fontShorthand(), {
       letterSpacing: params.letterSpacing,
     })
+    // Phrase prepared handle uses the SCALED font shorthand — rebuild too.
+    if (phrasePreparedText) {
+      const looped = phrasePreparedText + ' • '
+      phrasePrepared = prepareWithSegments(looped, fontShorthand(PHRASE_FONT_SCALE), {
+        letterSpacing: params.letterSpacing,
+      })
+      stripeCursor = { segmentIndex: 0, graphemeIndex: 0 }
+    }
     applyMeasureCtxFont()
     charWidthCache.clear()
+    phraseCharWidthCache.clear()
     // Cursor positions are still segment indices into the same source text,
     // and segment indexing is text-shape-invariant, so they remain valid.
   }
@@ -617,6 +704,12 @@ export function createFire(
   let smTongueMedSt   = params.tongueMedSt
   let smFlickerSt     = params.flickerSt
   let smRadialReachBoost = 0
+  // Timestamp the moment the central eye finishes its 5 words.  Used to
+  // hold the in-progress boost (flicker speed + radial reach) for the hold
+  // window, then ease it out slowly in lockstep with the decorative-eye
+  // close in main.ts.  −1 = not yet completed.
+  let mainCompletedAtMs = -1
+  const MAIN_HOLD_MS_FIRE = 1500
   let smSwirlSpeed    = params.swirlSpeed
   let smCurlDriftSpeed = params.curlDriftSpeed
   let smHueShiftSpeed  = params.colorHueShiftSpeed
@@ -642,8 +735,29 @@ export function createFire(
   let leftRepelStrength = 0
   let rightRepelStrength = 0
   let pupilLookStrength = 1
+  // Decorative eyes: non-interactive repel effects with caller-controlled
+  // strengths.  Positions are computed in the draw loop based on current
+  // viewport (cx_s / h) so they scale.
+  let decorEyeEffects: ReadonlyArray<CursorEffect | null> = []
+  let decorEyeStrengths: ReadonlyArray<number> = []
+  // Final-scene wall — empty until triggerEndingSequence wires it.
+  type WallEye = {
+    effect: CursorEffect | null
+    x: number
+    y: number
+    strength: number
+    word: string
+    wordColor?: string
+  }
+  let wallEyes: ReadonlyArray<WallEye> = []
+  const WALL_EYE_HOVER_R = 70
+  // Smoothed per-pupil offsets so each wall pupil eases toward the
+  // cursor instead of snapping.  Grows on demand to match wallEyes.length.
+  const wallPupilOffsets: Array<{ x: number; y: number }> = []
 
-  let mainEyeActual = 1;
+  // Main eye is now the last to open — closed until the right eye has
+  // collected its 5 words.
+  let mainEyeActual = 0;
   let mainEyeVelocity = 0;
 
   const collectedWords = {
@@ -803,26 +917,69 @@ export function createFire(
       if (cursorActive && inProgressIdx !== -1) {
         let px = cx_s
         let py = h * 0.8
+        // Strength of the eye that "owns" the in-progress slot — must be
+        // open before its hover boost (flame radial reach + flicker speed)
+        // is allowed to fire.
+        let openStrength = centerRepelStrength
         if (inProgressIdx === 1) {
           px = cx_s - w * 0.15
           py = h * 0.85
+          openStrength = leftRepelStrength
         } else if (inProgressIdx === 2) {
           px = cx_s + w * 0.15
           py = h * 0.85
+          openStrength = rightRepelStrength
         }
-        isHoveringInProgressNow = Math.hypot(cursorX - px, cursorY - py) < 60
+        isHoveringInProgressNow =
+          openStrength > 0.2 && Math.hypot(cursorX - px, cursorY - py) < 60
       }
 
-      const isLeftEyeHovered = cursorActive && Math.hypot(cursorX - (cx_s - w * 0.15), cursorY - (h * 0.85)) < 60;
-      const isRightEyeHovered = cursorActive && Math.hypot(cursorX - (cx_s + w * 0.15), cursorY - (h * 0.85)) < 60;
+      // Eye-hover effects (left-eye shape masks, right-eye image masks, the
+      // main-eye dim-on-side-hover) require the side eye to actually be
+      // open.  The repel strengths come from main.ts via setCenterRepels —
+      // they ride introOpen × *EyeActual, so a small-but-not-zero threshold
+      // reliably distinguishes "open" from "still closed / mid-spring".
+      const EYE_OPEN_EFFECT_THRESHOLD = 0.2
+      const isLeftEyeHovered = cursorActive
+        && leftRepelStrength > EYE_OPEN_EFFECT_THRESHOLD
+        && collectedWordsList.left.length < 5
+        && Math.hypot(cursorX - (cx_s - w * 0.15), cursorY - (h * 0.85)) < 60;
+      const isRightEyeHoveredRaw = cursorActive
+        && rightRepelStrength > EYE_OPEN_EFFECT_THRESHOLD
+        && collectedWordsList.right.length < 5
+        && Math.hypot(cursorX - (cx_s + w * 0.15), cursorY - (h * 0.85)) < 60;
+      // Right eye flickers between its image-mask animation and the regular
+      // flame for a chaotic, jittery feel.  Toggled at ~150 ms so it beats
+      // against the 200 ms image-cycle and never quite syncs up.
+      const rightEyeFlickerOn = Math.floor(timeMs / 150) % 2 === 0;
+      const isRightEyeHovered = isRightEyeHoveredRaw && rightEyeFlickerOn;
       
-      // Flicker speed ramps up and down at the same fast speed as radial reach
-      const flickerTau = isHoveringInProgressNow ? 0.3 : 0.5
-      const skFlicker = 1 - Math.exp(-dt / flickerTau)
+      // Latch the moment the central eye finishes — drives the post-
+      // completion slow-decay timing below.
+      const mainDone = collectedWordsList.main.length >= 5
+      if (mainDone && mainCompletedAtMs < 0) mainCompletedAtMs = timeMs
+      const sinceMainDone = mainCompletedAtMs >= 0 ? timeMs - mainCompletedAtMs : -1
+      const inMainHold = mainCompletedAtMs >= 0 && sinceMainDone < MAIN_HOLD_MS_FIRE
+      const inPostMainDecay = mainCompletedAtMs >= 0 && !inMainHold
 
-      // Radial reach expands faster (0.3s) than the flicker speeds up
-      const radialTau = isHoveringInProgressNow ? 0.3 : 0.5
-      const skRadial = 1 - Math.exp(-dt / radialTau)
+      // Flicker speed & radial reach normally ramp in/out over 0.3–0.5 s.
+      // After the central eye finishes:
+      //  • freeze the current value during the hold window (so the boost
+      //    doesn't visibly drain while the user is taking in the 5 decor
+      //    eyes), and then
+      //  • ease the return to baseline over ~1.5 s — matched to the slow
+      //    decor-close spring in main.ts so the entire stage decays as one.
+      const baseFlickerTau = isHoveringInProgressNow
+        ? 0.3
+        : (inPostMainDecay ? 1.5 : 0.5)
+      const flickerTau = inMainHold ? Infinity : baseFlickerTau
+      const skFlicker = flickerTau === Infinity ? 0 : 1 - Math.exp(-dt / flickerTau)
+
+      const baseRadialTau = isHoveringInProgressNow
+        ? 0.3
+        : (inPostMainDecay ? 1.5 : 0.5)
+      const radialTau = inMainHold ? Infinity : baseRadialTau
+      const skRadial = radialTau === Infinity ? 0 : 1 - Math.exp(-dt / radialTau)
 
       const targetRadialReachBoost = isHoveringInProgressNow ? 1 : 0
       smRadialReachBoost += (targetRadialReachBoost - smRadialReachBoost) * skRadial
@@ -835,7 +992,10 @@ export function createFire(
         return Math.max(0, Math.min(1, (dist - R_s) / 40 + 0.5))
       }
 
-      const targetMainOpen = (isLeftEyeHovered || isRightEyeHovered) ? 0 : 1;
+      // Main eye is open by default; it dims/closes only while a side eye is
+      // being hovered.  The actual gating by the eye-open sequence is done in
+      // main.ts via centerEyeActual (no per-frame work needed here).
+      const targetMainOpen = (isLeftEyeHovered || isRightEyeHoveredRaw) ? 0 : 1;
       mainEyeVelocity += (targetMainOpen - mainEyeActual) * 0.1;
       mainEyeVelocity *= 0.8;
       mainEyeActual += mainEyeVelocity;
@@ -1075,6 +1235,129 @@ export function createFire(
 
       // Layout cursor for this frame. Cloned so we don't mutate scrollCursor.
       let cursor: LayoutCursor = { ...scrollCursor }
+      // Same idea for the phrase stream that fills the stripe band when
+      // active.  Persists across frames via `stripeCursor` (set at the end
+      // of the row loop), so the phrase flows upward like the main fire.
+      let stripeRowCursor: LayoutCursor = { ...stripeCursor }
+      const stripeActive = stripeT > 0.001 && phrasePrepared !== null
+      // Thin horizontal band (~100 px tall) centred on the viewport.
+      const STRIPE_HALF_H = 50
+      const stripeTopY = h / 2 - STRIPE_HALF_H
+      const stripeBotY = h / 2 + STRIPE_HALF_H
+
+      // Pre-measure the centred phrase, wrapping it into multiple lines
+      // when it's too wide for the viewport.  Same font and scale the
+      // stripe rows already use, so the phrase reads as part of the same
+      // fire layer — just laid out across as many lines as it needs.
+      const PHRASE_CENTER_FONT = fontShorthand(PHRASE_FONT_SCALE)
+      const phraseCenterPx = params.fontSize * PHRASE_FONT_SCALE
+      const PHRASE_MAX_WIDTH_FRAC = 0.72
+      const maxPhraseLineWidth = w * PHRASE_MAX_WIDTH_FRAC
+      // Each entry is { text, widths } for a wrapped line.  Single-line
+      // phrases produce a single entry; long phrases get word-wrapped.
+      const phraseLines: Array<{ text: string; widths: number[]; lineW: number }> = []
+      let phraseMaxLineW = 0
+      if (stripeActive && stripePhrase) {
+        // Measure total width as a single line first — most phrases fit.
+        const allWidths: number[] = []
+        let totalW = 0
+        for (let k = 0; k < stripePhrase.length; k++) {
+          const cw = phraseCharWidth(stripePhrase[k])
+          allWidths.push(cw)
+          totalW += cw
+        }
+        if (totalW <= maxPhraseLineWidth) {
+          phraseLines.push({ text: stripePhrase, widths: allWidths, lineW: totalW })
+          phraseMaxLineW = totalW
+        } else {
+          // Greedy word-wrap.  Split keeps whitespace separators so we
+          // can rebuild the line text exactly.
+          const tokens = stripePhrase.split(/(\s+)/).filter((s) => s.length > 0)
+          let curText = ''
+          let curWidths: number[] = []
+          let curW = 0
+          const pushLine = (): void => {
+            // Trim trailing whitespace from the assembled line so a line
+            // break can't leave a stray space at the end.
+            let endIdx = curText.length
+            while (endIdx > 0 && /\s/.test(curText[endIdx - 1])) endIdx--
+            const trimmedText = curText.slice(0, endIdx)
+            const trimmedWidths = curWidths.slice(0, endIdx)
+            const trimmedW = trimmedWidths.reduce((a, b) => a + b, 0)
+            if (trimmedText.length > 0) {
+              phraseLines.push({ text: trimmedText, widths: trimmedWidths, lineW: trimmedW })
+              if (trimmedW > phraseMaxLineW) phraseMaxLineW = trimmedW
+            }
+          }
+          for (let ti = 0; ti < tokens.length; ti++) {
+            const tok = tokens[ti]
+            const tokWidths: number[] = []
+            let tokW = 0
+            for (let k = 0; k < tok.length; k++) {
+              const cw = phraseCharWidth(tok[k])
+              tokWidths.push(cw)
+              tokW += cw
+            }
+            if (curW + tokW > maxPhraseLineWidth && curText.length > 0) {
+              pushLine()
+              // Skip pure-whitespace tokens at the start of a new line.
+              if (/^\s+$/.test(tok)) {
+                curText = ''
+                curWidths = []
+                curW = 0
+              } else {
+                curText = tok
+                curWidths = tokWidths.slice()
+                curW = tokW
+              }
+            } else {
+              curText += tok
+              for (let k = 0; k < tokWidths.length; k++) curWidths.push(tokWidths[k])
+              curW += tokW
+            }
+          }
+          if (curText.length > 0) pushLine()
+        }
+      }
+      // Eye-shaped (elliptical) clearing centred on the phrase block
+      // (centre line of all wrapped phrase lines).  Wide horizontally so
+      // the widest phrase line fits well inside, tall enough to also
+      // envelop the source line below.  Chars inside the ellipse get a
+      // pure vertical push (away from the phrase line); strength fades
+      // smoothly from centre to boundary so the corners taper to points.
+      //
+      // Multi-line phrases need a wider field AND more push, because
+      // each extra line roughly doubles the area that has to be cleared.
+      // `lineExcess` is the number of wrapped lines beyond the first.
+      const sourceLinePx = params.fontSize * 0.95
+      const phraseLineSpacing = phraseCenterPx * 1.15
+      const phraseBlockH = phraseLines.length * phraseLineSpacing
+      const phraseBlockHalfH = phraseBlockH / 2
+      const sourceGap = phraseCenterPx * 0.45
+      const phraseCx = w / 2
+      const phraseCy = h / 2
+      const ellipseCy = phraseCy
+      const lineExcess = Math.max(0, phraseLines.length - 1)
+      // A (horizontal) — margin scales with the phrase width itself
+      // (≈ 18 % of the widest line) plus a small fixed cushion that
+      // grows for multi-line phrases.  Short phrases get a tight,
+      // proportional clearing instead of swimming in empty space, while
+      // long phrases keep generous elongation past their ends.
+      const ellipseA =
+        phraseMaxLineW * 0.59 +
+        phraseCenterPx * (1.5 + lineExcess * 1.4)
+      // B (vertical) — extends past the source baseline below the phrase
+      // block, then mirrored above by the symmetric ellipse.
+      const distToBottom =
+        phraseBlockHalfH + sourceGap + sourceLinePx / 2 + phraseCenterPx * 0.4
+      const ellipseB = Math.max(
+        phraseBlockHalfH + phraseCenterPx * 0.8,
+        distToBottom,
+      )
+      // Base amp unchanged for single-line phrases (per request); each
+      // extra wrapped line adds 50 % so the push reaches past the taller
+      // block.
+      const phraseClearAmp = 55 * (1 + lineExcess * 0.5)
 
       // Iterate rows bottom → top. As cursor advances through the corpus
       // within a frame, lower rows hold earlier-in-stream text and upper
@@ -1085,6 +1368,19 @@ export function createFire(
         const screenY = fireBottom - lineHeight - r * lineHeight
         if (screenY < fireTop - lineHeight) break
 
+        // Per-row stripe decision: is this row inside the stripe band?
+        // If yes, it's filled with the phrase regardless of sphere/mask;
+        // if no AND stripeT > 0, its corpus content fades with stripeT.
+        const inStripeRow =
+          stripeActive && screenY >= stripeTopY && screenY <= stripeBotY
+        const rowAlphaMult = inStripeRow ? 1 : 1 - stripeT
+        // Per-row width function so the stripe rows measure at the scaled
+        // phrase font size and corpus rows stay on the corpus cache.
+        const rowCharWidth = inStripeRow ? phraseCharWidth : charWidth
+        // Switch the canvas font for stripe rows so the bigger glyphs
+        // render at the same scale Pretext used to lay them out.
+        ctx.font = inStripeRow ? fontShorthand(PHRASE_FONT_SCALE) : fontShorthand()
+
         // Walk the sample buffer once, processing each in-flame span as
         // we encounter its right edge. A span is a contiguous x-range
         // where this row's screenY is below the column's flame top.
@@ -1094,8 +1390,8 @@ export function createFire(
           const x = i < numSamples ? i * FLAME_SAMPLE_STEP : w + 1
           let inside: boolean
           if (isLeftEyeHovered) {
-            const size = Math.min(w, h) * 0.3; 
-            const shapeIndex = Math.floor(timeMs / 200) % 7;
+            const size = Math.min(w, h) * 0.3;
+            const shapeIndex = Math.floor(timeMs / 200) % 8;
             const ddx = x - cx_s;
             const centerY = h / 2;
             const ddyCenter = screenY - centerY;
@@ -1126,7 +1422,7 @@ export function createFire(
                 // Outline square
                 const maxDist = Math.max(Math.abs(ddx), Math.abs(ddyCenter));
                 inside = maxDist >= size * 0.85 && maxDist <= size;
-            } else {
+            } else if (shapeIndex === 6) {
                 // I-Ching hexagram (Hexagram 64: alternating broken/solid)
                 const yNorm = (ddyCenter + size) / (2 * size);
                 const unit = 1 / 17;
@@ -1145,6 +1441,22 @@ export function createFire(
                     }
                 }
                 inside = inHexLine;
+            } else {
+                // Progression cluster — 5 small squares (center + 4 cardinal).
+                // Each square is shown only once the corresponding word slot
+                // has been collected on the left eye, so the cluster grows
+                // 1 → 5 as the user fills the left-eye quota.  Order:
+                //   1: center  2: top  3: right  4: bottom  5: left
+                const half = size * 0.16;  // half-width of each small square
+                const off  = size * 0.62;  // centre-to-centre offset to a cardinal square
+                const count = collectedWordsList.left.length;
+                let hit = false;
+                if (count >= 1 && Math.abs(ddx) <= half && Math.abs(ddyCenter) <= half) hit = true;
+                if (!hit && count >= 2 && Math.abs(ddx) <= half && Math.abs(ddyCenter + off) <= half) hit = true;
+                if (!hit && count >= 3 && Math.abs(ddx - off) <= half && Math.abs(ddyCenter) <= half) hit = true;
+                if (!hit && count >= 4 && Math.abs(ddx) <= half && Math.abs(ddyCenter - off) <= half) hit = true;
+                if (!hit && count >= 5 && Math.abs(ddx + off) <= half && Math.abs(ddyCenter) <= half) hit = true;
+                inside = hit;
             }
             if (inside && x >= w) inside = false;
           } else if (isRightEyeHovered && rightEyeImagesData.length > 0) {
@@ -1186,6 +1498,13 @@ export function createFire(
           if (inside && mask !== null && mask.isInside(x, screenY)) {
             inside = false
           }
+          // Stripe band override — once the stripe is at least half-faded
+          // in, the band fills the entire row width regardless of any
+          // sphere / eye / mask cutouts.  Same column-edge clamp as the
+          // other branches.
+          if (inStripeRow && stripeT > 0.5) {
+            inside = x < w
+          }
           if (inside && !inSpan) {
             spanStart = x
             inSpan = true
@@ -1211,34 +1530,47 @@ export function createFire(
               // Pretext breaks at grapheme boundaries when a word can't
               // fit, and the no-progress guard below catches the case
               // where it can't fit anything at all — so this is safe.
-              fillLoop: while (fills++ < 8) {
+              // Cap is generous so short looped sources (e.g. a stripe
+              // phrase like "Blame! • ", only ~120 px per cycle at the
+              // scaled phrase font) can still fill a wide row.  The
+              // no-progress safety check below makes the loop terminate
+              // cleanly even when this many iterations isn't needed.
+              fillLoop: while (fills++ < 64) {
                 const remaining = spanEnd - charX
                 const minW = fills === 1 ? MIN_SPAN_W : 4
                 if (remaining < minW) break
-                const range = layoutNextLineRange(prepared, cursor, remaining)
+                // Per-row dispatch — stripe rows pull from the phrase
+                // handle/cursor, all other rows pull from the corpus.
+                const rowPrepared = inStripeRow ? phrasePrepared! : prepared
+                const rowCursor = inStripeRow ? stripeRowCursor : cursor
+                const range = layoutNextLineRange(rowPrepared, rowCursor, remaining)
                 if (range === null) {
                   // Source exhausted — wrap and try the rest next iteration.
-                  cursor = { segmentIndex: 0, graphemeIndex: 0 }
+                  if (inStripeRow) {
+                    stripeRowCursor = { segmentIndex: 0, graphemeIndex: 0 }
+                  } else {
+                    cursor = { segmentIndex: 0, graphemeIndex: 0 }
+                  }
                   continue
                 }
                 // Safety: if Pretext can't advance, bail rather than spin.
-                if (range.end.segmentIndex === cursor.segmentIndex &&
-                    range.end.graphemeIndex === cursor.graphemeIndex) {
+                if (range.end.segmentIndex === rowCursor.segmentIndex &&
+                    range.end.graphemeIndex === rowCursor.graphemeIndex) {
                   break fillLoop
                 }
 
-                const txt = materializeLineRange(prepared, range).text
-                
+                const txt = materializeLineRange(rowPrepared, range).text
+
                 let unkernedWidth = 0
                 for (let c = 0; c < txt.length; c++) {
                   const ch = txt[c]
-                  unkernedWidth += (ch === ' ' || ch === '\t' || ch === '\n') ? charWidth(' ') : charWidth(ch)
+                  unkernedWidth += (ch === ' ' || ch === '\t' || ch === '\n') ? rowCharWidth(' ') : rowCharWidth(ch)
                 }
                 const correctionRatio = unkernedWidth > 0 ? range.width / unkernedWidth : 1
 
                 for (let c = 0; c < txt.length; c++) {
                   const ch = txt[c]
-                  const cw = ((ch === ' ' || ch === '\t' || ch === '\n') ? charWidth(' ') : charWidth(ch)) * correctionRatio
+                  const cw = ((ch === ' ' || ch === '\t' || ch === '\n') ? rowCharWidth(' ') : rowCharWidth(ch)) * correctionRatio
 
                   if (ch === ' ' || ch === '\t' || ch === '\n') {
                     charX += cw
@@ -1371,7 +1703,8 @@ export function createFire(
                     (intensity * (palette.length - 1)) | 0,
                   )
                   const entry = palette[bucket]
-                  const alpha = entry.a * tipFade
+                  // Per-row stripe blend: non-stripe rows fade with stripeT.
+                  const alpha = entry.a * tipFade * rowAlphaMult
                   if (alpha < 0.025) {
                     charX += cw
                     continue
@@ -1481,7 +1814,12 @@ export function createFire(
                       const lenWeight = maxFlameR > 1
                         ? (sFL / maxFlameR) * (sFL / maxFlameR)
                         : 1
-                      const effectiveSwirlStrength = isRightEyeHovered ? 0 : params.swirlStrength
+                      // Suppress swirl as the stripe activates so the
+                      // horizontal text line in the band stays straight
+                      // instead of riding the sphere's noise rotation.
+                      const effectiveSwirlStrength = isRightEyeHovered
+                        ? 0
+                        : params.swirlStrength * (1 - stripeT)
                       const angleOffset =
                         noiseVal * effectiveSwirlStrength * tipWeight * lenWeight
                       const cosA = Math.cos(angleOffset)
@@ -1526,7 +1864,9 @@ export function createFire(
                   // back.  Reads the swirled position so cursor effects
                   // compose with the swirl naturally.
                   // Fade out the mouse repel effect if it crosses inside the giant black sphere
-                  let effectiveCe = ce
+                  // Also fade with the stripe so the cursor-driven warp
+                  // doesn't curve the horizontal stripe line.
+                  let effectiveCe = ce * (1 - stripeT)
                   if (sphereOn && cursorEffect && effectiveCe > 0.001) {
                     const dx_c = cursorX - cx_s
                     const dy_c = cursorY - cy_s
@@ -1549,26 +1889,90 @@ export function createFire(
                     drawY = out[1]
                   }
 
+                  // All eye repel fields (main / sides / decor / wall) get
+                  // attenuated with the stripe so they don't warp the
+                  // horizontal phrase band.  Pupil rendering passes later
+                  // still use full strength for opacity, so eyes stay
+                  // visible — only the char-displacement halo dims out.
+                  const eyeRepelMult = 1 - stripeT
+
                   // Constant center repel effect (like the mouse effect but anchored to the middle)
                   if (centerRepelStrength > 0.001 || leftRepelStrength > 0.001 || rightRepelStrength > 0.001) {
                     if (centerRepelEffect && fadeMain > 0) {
                       const out = centerRepelEffect.displace(
-                        drawX, drawY, cx_s, h * 0.8, timeMs, centerRepelStrength * fadeMain
+                        drawX, drawY, cx_s, h * 0.8, timeMs, centerRepelStrength * fadeMain * eyeRepelMult
                       )
                       drawX = out[0]; drawY = out[1]
                     }
                     if (leftRepelEffect && fadeLeft > 0) {
                       const out = leftRepelEffect.displace(
-                        drawX, drawY, cx_s - w * 0.15, h * 0.85, timeMs, leftRepelStrength * fadeLeft
+                        drawX, drawY, cx_s - w * 0.15, h * 0.85, timeMs, leftRepelStrength * fadeLeft * eyeRepelMult
                       )
                       drawX = out[0]; drawY = out[1]
                     }
                     if (rightRepelEffect && fadeRight > 0) {
                       const out = rightRepelEffect.displace(
-                        drawX, drawY, cx_s + w * 0.15, h * 0.85, timeMs, rightRepelStrength * fadeRight
+                        drawX, drawY, cx_s + w * 0.15, h * 0.85, timeMs, rightRepelStrength * fadeRight * eyeRepelMult
                       )
                       drawX = out[0]; drawY = out[1]
                     }
+                  }
+
+                  // Decorative eyes — purely visual repel holes laid out on
+                  // a bowl-shaped arc above the central eye (middle eye sags
+                  // toward the central one, outer eyes ride higher).
+                  // Pupils are drawn later, looking straight ahead.
+                  const decorN = decorEyeEffects.length
+                  for (let di = 0; di < decorN; di++) {
+                    const ds = (decorEyeStrengths[di] ?? 0) * eyeRepelMult
+                    if (ds <= 0.001) continue
+                    const eff = decorEyeEffects[di]
+                    if (!eff) continue
+                    const [eyeX, eyeY] = decorEyePos(di, decorN, cx_s, w, h)
+                    const out = eff.displace(drawX, drawY, eyeX, eyeY, timeMs, ds)
+                    drawX = out[0]; drawY = out[1]
+                  }
+
+                  // Final-scene wall eyes — same displacement technique as
+                  // the decor eyes, but with caller-supplied positions and
+                  // bound-word pupils (drawn later in the pupil pass).
+                  const wallN = wallEyes.length
+                  for (let wi = 0; wi < wallN; wi++) {
+                    const we = wallEyes[wi]
+                    const wallS = we.strength * eyeRepelMult
+                    if (wallS <= 0.001 || !we.effect) continue
+                    const out = we.effect.displace(
+                      drawX, drawY, we.x, we.y, timeMs, wallS,
+                    )
+                    drawX = out[0]; drawY = out[1]
+                  }
+
+                  // Phrase-centre elliptical mask + pure vertical push.
+                  // The mask defines an eye-shaped clearing (wide and
+                  // tapered at the corners); inside it, every char is
+                  // pushed straight up or down away from the phrase
+                  // line.  Pure vertical direction guarantees the
+                  // phrase ends get cleared too — radial push would
+                  // weaken to horizontal there and leave them covered.
+                  if (inStripeRow && stripeT > 0 && ellipseA > 0 && ellipseB > 0) {
+                    const relX = drawX - phraseCx
+                    const relY = drawY - ellipseCy
+                    const nx = relX / ellipseA
+                    const ny = relY / ellipseB
+                    const normSq = nx * nx + ny * ny
+                    if (normSq < 1) {
+                      // Linear-in-normSq falloff — strong inside, smooth
+                      // to zero at the boundary.  Stays generous near
+                      // the phrase ends where a squared profile would
+                      // taper too quickly.
+                      const push = (1 - normSq) * phraseClearAmp * stripeT
+                      // Pure vertical push, away from the phrase line.
+                      if (relY <= 0) drawY -= push
+                      else drawY += push
+                    }
+                  }
+
+                  if (centerRepelStrength > 0.001 || leftRepelStrength > 0.001 || rightRepelStrength > 0.001) {
                     
                     // Track which character is closest to each pupil center
                     if (fadeMain > 0) {
@@ -1606,65 +2010,88 @@ export function createFire(
                   charX += cw
                 }
 
-                cursor = range.end
+                if (inStripeRow) stripeRowCursor = range.end
+                else cursor = range.end
               }
             }
           }
         }
       }
 
+      // Persist the phrase cursor across frames so the stripe text flows
+      // upward continuously, like the corpus.
+      stripeCursor = stripeRowCursor
+
+      // ── Centred phrase ──────────────────────────────────────────────────
+      // Each wrapped phrase line drawn glyph-by-glyph in the same font +
+      // tip palette colour the stripe pretext uses.  Together with the
+      // ellipse displacement above it reads as the phrase "pushing apart"
+      // the looped stripe — same way the wall-eye pupil punches its hole
+      // through the surrounding fire.  The source is printed below the
+      // phrase block, smaller and italic, with reduced alpha.
+      if (stripeActive && phraseLines.length > 0) {
+        ctx.save()
+        ctx.fillStyle = palette[palette.length - 1].fill
+        ctx.globalAlpha = stripeT
+        ctx.textAlign = 'left'
+        ctx.textBaseline = 'middle'
+        ctx.font = PHRASE_CENTER_FONT
+        // Vertically centre the multi-line block on the phrase line.
+        const firstLineCy = phraseCy - phraseBlockHalfH + phraseLineSpacing / 2
+        for (let li = 0; li < phraseLines.length; li++) {
+          const line = phraseLines[li]
+          const lineY = firstLineCy + li * phraseLineSpacing
+          let glyphX = phraseCx - line.lineW / 2
+          for (let k = 0; k < line.text.length; k++) {
+            ctx.fillText(line.text[k], glyphX, lineY)
+            glyphX += line.widths[k]
+          }
+        }
+        // Source line — below the phrase block, italic, dimmer.
+        if (stripeSource) {
+          const sourceY = phraseCy + phraseBlockHalfH + sourceGap
+          ctx.textAlign = 'center'
+          ctx.font = `italic 400 ${sourceLinePx}px ${params.fontFamily}`
+          ctx.globalAlpha = stripeT * 0.6
+          ctx.fillText(stripeSource, phraseCx, sourceY)
+        }
+        ctx.restore()
+      }
+
       // ── Draw stable pupils ────────────────────────────────────────────────
       let bgWordToDraw: string | null = null
       let bgWordColor: string | null = null
 
-      if (centerRepelStrength > 0 || leftRepelStrength > 0 || rightRepelStrength > 0) {
+      const anyDecorActive = decorEyeStrengths.some(s => s > 0.001)
+      const anyWallActive = wallEyes.some(e => e.strength > 0.001)
+      if (centerRepelStrength > 0 || leftRepelStrength > 0 || rightRepelStrength > 0 || anyDecorActive || anyWallActive) {
         ctx.save()
         // Use the brightest color (the tip of the flame)
         ctx.fillStyle = palette[palette.length - 1].fill
         ctx.textAlign = 'center'
         ctx.textBaseline = 'middle'
 
-        const eyePositions = [
-          { x: cx_s, y: h * 0.8 },
-          { x: cx_s - w * 0.15, y: h * 0.85 + 80 },
-          { x: cx_s + w * 0.15, y: h * 0.85 + 80 },
-        ]
+        // (Removed legacy "look at the in-progress eye after finishing" logic
+        //  along with the hard-coded +80 y nudge it applied to the side-eye
+        //  look targets — all three main pupils now simply track the cursor.)
 
         const drawPupil = (char: string, px: number, py: number, pupilIndex: number, repelFade: number) => {
           if (repelFade <= 0) return
-
-          let lookTargetX = cursorX
-          let lookTargetY = cursorY
-          let isLookingAtCursor = true
 
           let inProgressIdx = -1
           if (collectedWordsList.main.length < 5) inProgressIdx = 0
           else if (collectedWordsList.left.length < 5) inProgressIdx = 1
           else if (collectedWordsList.right.length < 5) inProgressIdx = 2
-          
-          let isFinished = false
-          if (pupilIndex === 0) isFinished = collectedWordsList.main.length >= 5
-          else if (pupilIndex === 1) isFinished = collectedWordsList.left.length >= 5
-          else if (pupilIndex === 2) isFinished = collectedWordsList.right.length >= 5
 
-          if (isFinished && inProgressIdx !== -1) {
-            lookTargetX = eyePositions[inProgressIdx].x
-            lookTargetY = eyePositions[inProgressIdx].y
-            isLookingAtCursor = false
-          }
-
-          const lookDx = lookTargetX - px
-          const lookDy = lookTargetY - py
+          const lookDx = cursorX - px
+          const lookDy = cursorY - py
           const lookDist = Math.sqrt(lookDx * lookDx + lookDy * lookDy)
-
-          const cursorDx = cursorX - px
-          const cursorDy = cursorY - py
-          const cursorDist = Math.sqrt(cursorDx * cursorDx + cursorDy * cursorDy)
+          const cursorDist = lookDist
 
           let targetOx = 0
           let targetOy = 0
 
-          if (lookDist > 0 && (isLookingAtCursor ? cursorActive : true)) {
+          if (lookDist > 0 && cursorActive) {
             const maxLook = (pupilIndex === 0 ? 55 : 35) * pupilLookStrength // Pushed further out, especially for center eye
             const lookAmt = Math.min(lookDist / 300, 1) * maxLook
             targetOx = (lookDx / lookDist) * lookAmt
@@ -1689,7 +2116,12 @@ export function createFire(
             }
           }
 
-          if (activeWordIndex !== -1 && pupilIndex === activeWordEyeIndex && timeMs <= activeWordEndTime) {
+          // While the right eye is the active word source, mirror its word
+          // through the left eye too (left pupil shows the same caps-word).
+          const isLeftMirroringRight = pupilIndex === 1 && activeWordEyeIndex === 2
+          if (activeWordIndex !== -1
+              && timeMs <= activeWordEndTime
+              && (pupilIndex === activeWordEyeIndex || isLeftMirroringRight)) {
             isHoveringWord = true
             hoveredWordIndex = activeWordIndex
             charToDraw = quotesCaps[hoveredWordIndex]
@@ -1703,25 +2135,31 @@ export function createFire(
             let isColored = false
             let color = '#ffffff'
             let darkColor = '#000000' // Black for non-colored words
-            
-            if (pupilIndex === 0 && mainColoredWords.has(hoveredWordIndex)) {
+
+            // For coloring purposes, the left eye mirrors the right eye when
+            // mirroring, so it reuses the right-eye colour rules.  Collection
+            // is gated on actually BEING that eye (not the mirror), so the
+            // right eye still owns the count.
+            const colorPupilIndex = isLeftMirroringRight ? 2 : pupilIndex
+
+            if (colorPupilIndex === 0 && mainColoredWords.has(hoveredWordIndex)) {
               isColored = true
               color = params.wordColorMain
-              if (collectedWordsList.main.length < 5 && !collectedWords.main.has(charToDraw)) {
+              if (pupilIndex === 0 && collectedWordsList.main.length < 5 && !collectedWords.main.has(charToDraw)) {
                 collectedWords.main.add(charToDraw)
                 collectedWordsList.main.push(charToDraw)
               }
-            } else if (pupilIndex === 1 && leftColoredWords.has(hoveredWordIndex)) {
+            } else if (colorPupilIndex === 1 && leftColoredWords.has(hoveredWordIndex)) {
               isColored = true
               color = params.wordColorLeft
-              if (collectedWordsList.left.length < 5 && !collectedWords.left.has(charToDraw)) {
+              if (pupilIndex === 1 && collectedWordsList.left.length < 5 && !collectedWords.left.has(charToDraw)) {
                 collectedWords.left.add(charToDraw)
                 collectedWordsList.left.push(charToDraw)
               }
-            } else if (pupilIndex === 2 && rightColoredWords.has(hoveredWordIndex)) {
+            } else if (colorPupilIndex === 2 && rightColoredWords.has(hoveredWordIndex)) {
               isColored = true
               color = params.wordColorRight
-              if (collectedWordsList.right.length < 5 && !collectedWords.right.has(charToDraw)) {
+              if (pupilIndex === 2 && collectedWordsList.right.length < 5 && !collectedWords.right.has(charToDraw)) {
                 collectedWords.right.add(charToDraw)
                 collectedWordsList.right.push(charToDraw)
               }
@@ -1756,71 +2194,104 @@ export function createFire(
         drawPupil(mainPupilChar, cx_s, h * 0.8, 0, fadeMain)
         drawPupil(leftPupilChar, cx_s - w * 0.15, h * 0.85, 1, fadeLeft)
         drawPupil(rightPupilChar, cx_s + w * 0.15, h * 0.85, 2, fadeRight)
-        
+
+        // Decorative pupils — one per decor eye, looking straight ahead (no
+        // cursor tracking, no offset).  Sized like the side-eye pupils and
+        // tinted with the same palette tip.
+        ctx.font = fontShorthand()
+        ctx.fillStyle = palette[palette.length - 1].fill
+        const decorN2 = decorEyeEffects.length
+        for (let di = 0; di < decorN2; di++) {
+          const ds = decorEyeStrengths[di] ?? 0
+          if (ds <= 0.001) continue
+          const [eyeX, eyeY] = decorEyePos(di, decorN2, cx_s, w, h)
+          ctx.globalAlpha = Math.min(1, ds * 3)
+          ctx.fillText('O', eyeX, eyeY)
+        }
+
+        // Final-scene wall pupils — 'O' by default; the bound word when
+        // the cursor is within WALL_EYE_HOVER_R of the eye centre.  The
+        // 'O' pupil tracks the cursor (same lerp-on-offset pattern as the
+        // main eye), so the wall feels alive even when no eye is hovered.
+        const wallN2 = wallEyes.length
+        if (wallN2 > 0) {
+          const baseFont = fontShorthand()
+          // Word font matches the fire's body font (Cormorant Garamond)
+          // at a slightly bigger size so it reads clearly inside the hole.
+          const wordFont = `700 22px ${params.fontFamily}`
+          // Ensure the per-pupil smoothing buffer keeps up with the wall.
+          while (wallPupilOffsets.length < wallN2) {
+            wallPupilOffsets.push({ x: 0, y: 0 })
+          }
+          for (let wi = 0; wi < wallN2; wi++) {
+            const we = wallEyes[wi]
+            if (we.strength <= 0.001) continue
+            ctx.fillStyle = palette[palette.length - 1].fill
+            ctx.globalAlpha = Math.min(1, we.strength * 3)
+
+            const lookDx = cursorX - we.x
+            const lookDy = cursorY - we.y
+            const lookDist = Math.sqrt(lookDx * lookDx + lookDy * lookDy)
+            const isHover =
+              cursorActive && lookDist < WALL_EYE_HOVER_R
+
+            // Cursor-tracking offset (lerped for organic motion).  Match
+            // the side-pupil tuning: maxLook 35 px, falls off past ~300 px.
+            let targetOx = 0
+            let targetOy = 0
+            if (lookDist > 0 && cursorActive) {
+              const maxLook = 35 * pupilLookStrength
+              const lookAmt = Math.min(lookDist / 300, 1) * maxLook
+              targetOx = (lookDx / lookDist) * lookAmt
+              targetOy = (lookDy / lookDist) * lookAmt
+            }
+            const off = wallPupilOffsets[wi]
+            off.x += (targetOx - off.x) * 0.15
+            off.y += (targetOy - off.y) * 0.15
+
+            if (isHover && we.word) {
+              ctx.font = wordFont
+              // Word stays centred on the eye — no offset; it'd shift the
+              // text out of the hole the repel field opened.
+              // Colour matches the source-eye palette (main / left / right).
+              ctx.fillStyle = we.wordColor ?? palette[palette.length - 1].fill
+              // Per-letter jitter — small, smoothly-moving 2D noise sampled
+              // per character index + slow time axis.  Letters are drawn
+              // individually with a left baseline so we control x precisely.
+              ctx.textAlign = 'left'
+              const letters = we.word
+              let totalW = 0
+              const widths: number[] = new Array(letters.length)
+              for (let li = 0; li < letters.length; li++) {
+                widths[li] = ctx.measureText(letters[li]).width
+                totalW += widths[li]
+              }
+              const tNoise = timeMs * 0.0014
+              const amp = 1.8
+              let xCursor = we.x - totalW / 2
+              for (let li = 0; li < letters.length; li++) {
+                const jx = nWallWord(li * 0.7, tNoise) * amp
+                const jy = nWallWord(li * 0.7 + 100, tNoise) * amp
+                ctx.fillText(letters[li], xCursor + jx, we.y + jy)
+                xCursor += widths[li]
+              }
+              ctx.textAlign = 'center'
+            } else {
+              ctx.font = baseFont
+              ctx.fillStyle = palette[palette.length - 1].fill
+              ctx.fillText('O', we.x + off.x, we.y + off.y)
+            }
+          }
+        }
+
         ctx.restore()
       }
 
       ctx.globalAlpha = 1
 
-      // ── Glow post-pass ───────────────────────────────────────────────────
-      // Copy the freshly-drawn fire into the offscreen, tint it with the
-      // *current* tip colour (palette stop 4 after live hue rotation — so
-      // the glow inherits the same colour cycle as the corona's tips),
-      // then blit it back over the main canvas through a blur filter +
-      // 'lighter' (additive) compositing.  An optional second pass at a
-      // wider radius and lower alpha feathers the halo softer.
-      if (params.glowOpacity > 0 && params.glowRadius > 0) {
-        const cw = ctx.canvas.width
-        const ch = ctx.canvas.height
-        if (glowCanvas.width !== cw)  glowCanvas.width  = cw
-        if (glowCanvas.height !== ch) glowCanvas.height = ch
-
-        // Live-derived tint = tip stop in HSL space + the same hue offset
-        // the palette uses this frame.  When hue rotation is off, hueDeg
-        // is 0 and we just use the tip colour as-is.
-        const tipRgb = hslToRgb(hslTip[0] + hueDeg, hslTip[1], hslTip[2])
-        const glowFill = `rgb(${tipRgb[0]},${tipRgb[1]},${tipRgb[2]})`
-
-        // Snapshot the main canvas onto the offscreen (no transform — we're
-        // working in device pixels for the post-pass).
-        glowCtx.setTransform(1, 0, 0, 1, 0, 0)
-        glowCtx.globalCompositeOperation = 'copy'
-        glowCtx.globalAlpha = 1
-        glowCtx.filter = 'none'
-        glowCtx.drawImage(ctx.canvas, 0, 0)
-
-        // source-in: keep alpha of existing pixels, replace RGB with the
-        // glow colour.  The result is a one-colour silhouette of the fire.
-        glowCtx.globalCompositeOperation = 'source-in'
-        glowCtx.fillStyle = glowFill
-        glowCtx.fillRect(0, 0, cw, ch)
-
-        // Composite the tinted offscreen back over the main canvas with a
-        // blur, additively.  setTransform(1) so the blur radius is in
-        // device pixels (matching the offscreen buffer) — otherwise the
-        // DPR transform would re-scale the filter unexpectedly.
-        ctx.save()
-        ctx.setTransform(1, 0, 0, 1, 0, 0)
-        ctx.globalCompositeOperation = 'lighter'
-
-        // Pass 1 — tight inner glow.
-        ctx.filter = `blur(${params.glowRadius}px)`
-        ctx.globalAlpha = params.glowOpacity
-        ctx.drawImage(glowCanvas, 0, 0)
-
-        // Pass 2 — wider soft halo, only when softness > 0.
-        if (params.glowSoftness > 0) {
-          const wideR = params.glowRadius * (1 + params.glowSoftness * 3)
-          ctx.filter = `blur(${wideR}px)`
-          ctx.globalAlpha = params.glowOpacity * params.glowSoftness * 0.7
-          ctx.drawImage(glowCanvas, 0, 0)
-        }
-
-        ctx.restore()
-        ctx.globalAlpha = 1
-        ctx.filter = 'none'
-        ctx.globalCompositeOperation = 'source-over'
-      }
+      // (Removed: Glow post-pass — params.glowOpacity / glowRadius /
+      // glowSoftness / glowColor remain in FireParams for the controls
+      // panel but are no longer rendered.)
 
       if (bgWordToDraw && bgWordColor) {
         ctx.save()
@@ -1828,7 +2299,7 @@ export function createFire(
         ctx.fillStyle = bgWordColor
         ctx.textAlign = 'center'
         ctx.textBaseline = 'alphabetic'
-        
+
         const baseSize = 100
         ctx.font = `900 ${baseSize}px Inter, sans-serif`
         const metrics = ctx.measureText(bgWordToDraw)
@@ -1902,6 +2373,26 @@ export function createFire(
       rightRepelStrength = rightStrength
     },
 
+    setDecorEyes(effects, strengths) {
+      decorEyeEffects = effects
+      decorEyeStrengths = strengths
+    },
+
+    setWallEyes(eyes) {
+      wallEyes = eyes
+    },
+
+    setStripe(t, phrase, source) {
+      stripeT = t
+      // Rebuild the phrase-prepared handle only when the text actually
+      // changes — prepare is the expensive call, layout is the cheap one.
+      if (phrase !== stripePhrase) {
+        stripePhrase = phrase
+        rebuildPhrasePrepared()
+      }
+      stripeSource = source
+    },
+
     getCollectedWords() {
       return collectedWordsList
     },
@@ -1920,6 +2411,22 @@ export function createFire(
 // ─── Palette ────────────────────────────────────────────────────────────────
 
 type RGB = [number, number, number]
+
+/** Compute the (x, y) position of the i-th decorative eye out of `n`,
+ *  laid out on a dome-shaped arc above the central eye.  The middle eye
+ *  rides highest; the outer eyes hang lower.  Shared by the per-character
+ *  displacement loop and the pupil-draw pass so both agree on where each
+ *  eye lives. */
+function decorEyePos(i: number, n: number, cx: number, w: number, h: number): [number, number] {
+  const tt = n > 1 ? i / (n - 1) : 0.5
+  const s = (tt - 0.5) * 2          // -1 (leftmost) … +1 (rightmost)
+  const eyeX = cx + s * w * 0.35    // wide spread — bigger gaps than the side eyes
+  // Concave-down dome: middle eye at h*0.40 (top), outer eyes sag down to
+  // h*0.62.  Stronger arch than before — the row now visibly bows over
+  // the central eye instead of riding nearly level.
+  const eyeY = h * 0.40 + h * 0.22 * s * s
+  return [eyeX, eyeY]
+}
 
 function buildPalette(
   stops: number,

@@ -76,6 +76,7 @@ body.ui-hidden #floating-menu {
   display: none !important;
 }
 
+
 /* The body is scrollable — main.ts sets `min-height` dynamically based
    on the checkpoint count.  Everything visible (canvas, name) is
    position: fixed so it stays pinned to the viewport while the user
@@ -94,6 +95,81 @@ body { scrollbar-width: none; }
   display: block;
   z-index: 0;
   pointer-events: none;
+}
+
+#intro-phrase {
+  position: fixed;
+  inset: 0;
+  z-index: 20;
+  background: #000;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 6vw;
+  opacity: 0;
+  pointer-events: none;
+  animation: intro-phrase-fade 13500ms ease-in-out forwards;
+}
+
+#intro-phrase p {
+  max-width: 760px;
+  margin: 0;
+  font-family: 'Cormorant Garamond', Georgia, serif;
+  font-weight: 400;
+  font-style: italic;
+  font-size: clamp(18px, 2.4vw, 32px);
+  line-height: 1.5;
+  color: #f4ead8;
+  text-align: center;
+  letter-spacing: 0.01em;
+}
+
+#intro-phrase.done {
+  display: none;
+}
+
+/* Drifting blobs of varying dark-purple shades, clipped to the word.
+   Three radial gradients move independently at slow, irrational-ratio
+   speeds so the overall pattern never lines up the same way twice —
+   reads as a hazy, flowing texture rather than a flicker. */
+#intro-phrase .fractal {
+  background-color: #2a0a48;
+  background-image:
+    radial-gradient(ellipse 60% 140% at 20% 50%, rgba(110, 50, 165, 0.95), rgba(110, 50, 165, 0) 60%),
+    radial-gradient(ellipse 50% 130% at 70% 50%, rgba(30, 8, 56, 0.9), rgba(30, 8, 56, 0) 65%),
+    radial-gradient(ellipse 45% 120% at 50% 50%, rgba(80, 32, 130, 0.85), rgba(80, 32, 130, 0) 60%);
+  background-size: 220% 100%, 260% 100%, 190% 100%;
+  background-repeat: no-repeat;
+  -webkit-background-clip: text;
+          background-clip: text;
+  color: transparent;
+  -webkit-text-fill-color: transparent;
+  text-shadow: none;
+  animation:
+    fractal-drift-a 3s ease-in-out infinite alternate,
+    fractal-drift-b 6s ease-in-out infinite alternate,
+    fractal-drift-c 4s ease-in-out infinite alternate;
+  will-change: background-position;
+}
+
+@keyframes fractal-drift-a {
+  0%   { background-position: -10% 30%, 0 0, 0 0; }
+  100% { background-position: 110% 70%, 0 0, 0 0; }
+}
+@keyframes fractal-drift-b {
+  0%   { background-position: 0 0, 120% 40%, 0 0; }
+  100% { background-position: 0 0, -20% 60%, 0 0; }
+}
+@keyframes fractal-drift-c {
+  0%   { background-position: 0 0, 0 0, 90% 20%; }
+  100% { background-position: 0 0, 0 0, 10% 80%; }
+}
+
+@keyframes intro-phrase-fade {
+  0%   { opacity: 0; }
+  11.5%  { opacity: 1; }
+  88.5%  { opacity: 1; }
+  100% { opacity: 0; }
 }
 
 /* Name — pure DOM overlay above the fire canvas.  All styling driven by
